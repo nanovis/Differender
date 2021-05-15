@@ -5,13 +5,13 @@ n = 320
 pixels = ti.field(dtype=float, shape=(n * 2, n))
 
 
-@ti.func
+@ti.func  # __device__
 def complex_sqr(z):
     return ti.Vector([z[0] ** 2 - z[1] ** 2, z[0] * z[1] * 2])
 
 
-@ti.kernel
-def paint(t: float):
+@ti.kernel  # __global__
+def paint(t: float):  # must be type-hinted
     for i, j in pixels:
         c = ti.Vector([-0.8, ti.cos(t) * 0.2])
         z = ti.Vector([i / n - 1, j / n - 0.5])
