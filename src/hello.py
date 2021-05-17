@@ -8,6 +8,8 @@ data_f = data / float(np.iinfo(np.uint16).max)
 width, height, slice_num = data.shape
 scaling = 5
 pixels = ti.field(dtype=float, shape=(width * scaling, height * scaling))
+# TODO: improve speed by experimenting memory layouts,
+# see https://taichi.graphics/docs/develop/documentation/advanced/layout.html#flat-layouts-versus-hierarchical-layouts
 data_field = ti.field(ti.f64, shape=(width, height, slice_num))
 data_field.from_numpy(data_f)
 
