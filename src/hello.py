@@ -8,9 +8,9 @@ data_f = data / float(np.iinfo(np.uint16).max)
 width, height, slice_num = data.shape
 scaling = 5
 data_field = ti.field(ti.f64, shape=(width, height, slice_num))
-# try looking at different axis to check memory layout issues
+# try looking from different axis to check memory layout issues
 width, height, slice_num = width, slice_num, height
-pixels = ti.field(dtype=float, shape=(width * scaling, height * scaling))
+pixels = ti.Vector.field(3, dtype=float, shape=(width * scaling, height * scaling))
 # materialization
 data_field.from_numpy(data_f)
 
@@ -20,10 +20,10 @@ def paint_slice(slice_idx: int):
     for i, j in pixels:
         idx_x = i // scaling
         idx_y = j // scaling
-        pixels[i, j] = data_field[idx_x, idx_y, slice_idx]
+        pixels[i, j].fill(data_field[idx_x, idx_y, slice_idx])
 
 
-gui = ti.GUI("SciVis Slicing", res=(width * scaling, height * scaling))
+gui = ti.GUI("SciVis Slicing", res=(width * scaling, height * scaling), fast_gui=True)
 slice_num = int(slice_num)
 slice_idx = 3
 count = 0
