@@ -81,9 +81,7 @@ def sample_transfer_function(scalar: float):
 
 
 @ti.func
-def get_normal(x: int, y: int, z: float):
-    x = float(x)
-    y = float(y)
+def get_normal(x: float, y: float, z: float):
     dx = sample_volume_trilinear(x + delta, y, z) - sample_volume_trilinear(x - delta, y, z)
     dy = sample_volume_trilinear(x, y + delta, z) - sample_volume_trilinear(x, y - delta, z)
     dz = sample_volume_trilinear(x, y, z + delta) - sample_volume_trilinear(x, y, z - delta)
@@ -110,7 +108,7 @@ def simple_DVR():
             opacity = src_color.w
             new_src = tl.vec4(src_color.xyz * opacity, opacity)
             # shading
-            normal = get_normal(idx_x, idx_y, marching_z_pos)
+            normal = get_normal(position.x, position.y, position.z)
             dir_dot_norm = ray_direction.dot(normal)
 
             diffuse_color = max(dir_dot_norm, 0.0) * I_diffuse
