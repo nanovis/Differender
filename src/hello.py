@@ -5,7 +5,7 @@ import taichi_glsl as tl
 
 ti.init(arch=ti.cuda)
 data = utils.load_head_data()
-data_f = data / float(np.iinfo(np.uint16).max)
+data_f = (data / float(np.iinfo(np.uint16).max)).astype(np.float32)
 print(data_f.shape)
 transfer_function_data = utils.load_transfer_function()
 width, height, slice_num = data.shape
@@ -13,8 +13,8 @@ scaling = 5
 data_field = ti.field(ti.f32, shape=(width, height, slice_num))
 # try looking from different axis to check memory layout issues
 width, height, slice_num = width, slice_num, height
-pixels = ti.Vector.field(3, dtype=float, shape=(width * scaling, height * scaling))
-transfer_function = ti.Vector.field(4, dtype=float, shape=transfer_function_data.shape[0])
+pixels = ti.Vector.field(3, dtype=ti.f32, shape=(width * scaling, height * scaling))
+transfer_function = ti.Vector.field(4, dtype=ti.f32, shape=transfer_function_data.shape[0])
 # materialization
 data_field.from_numpy(data_f)
 transfer_function.from_numpy(transfer_function_data)
