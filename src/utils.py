@@ -2,6 +2,21 @@ import numpy as np
 import pickle
 
 
+def load_transfer_function():
+    return np.array([0.0, 0.0, 0.0, 0.0,
+                     0.0, 0.5, 0.5, 0.0,
+                     0.0, 0.5, 0.5, 0.01,
+                     0.0, 0.5, 0.5, 0.0,
+                     0.5, 0.5, 0.0, 0.0,
+                     0.5, 0.5, 0.0, 0.2,
+                     0.5, 0.5, 0.0, 0.5,
+                     0.5, 0.5, 0.0, 0.2,
+                     0.5, 0.5, 0.0, 0.0,
+                     0.0, 0.0, 0.0, 0.0,
+                     1.0, 0.0, 1.0, 0.0,
+                     1.0, 0.0, 1.0, 0.8]).reshape(12, 4)
+
+
 def load_data(file_path):
     with open(file_path, "rb") as f:
         data = pickle.load(f)
@@ -32,5 +47,6 @@ def _load_head_data():
 
 
 if __name__ == "__main__":
-    dims, data = _load_head_data()
-    dump_data(data, "./data/skewed_head.pickle")
+    # dims, data = _load_head_data()
+    # dump_data(data, "./data/skewed_head.pickle")
+    print(load_transfer_function())
