@@ -10,7 +10,7 @@ print(data_f.shape)
 transfer_function_data = utils.load_transfer_function()
 width, height, slice_num = data.shape
 scaling = 5
-data_field = ti.field(ti.f64, shape=(width, height, slice_num))
+data_field = ti.field(ti.f32, shape=(width, height, slice_num))
 # try looking from different axis to check memory layout issues
 width, height, slice_num = width, slice_num, height
 pixels = ti.Vector.field(3, dtype=float, shape=(width * scaling, height * scaling))
