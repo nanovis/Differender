@@ -86,7 +86,7 @@ def get_normal(x: float, y: float, z: float):
     dy = sample_volume_trilinear(x, y + delta, z) - sample_volume_trilinear(x, y - delta, z)
     dz = sample_volume_trilinear(x, y, z + delta) - sample_volume_trilinear(x, y, z - delta)
     n = ti.Vector([dx, dy, dz])
-    return n / n.norm()
+    return n.normalized()
 
 
 @ti.kernel
@@ -112,7 +112,7 @@ def simple_DVR():
             dir_dot_norm = ray_direction.dot(normal)
 
             diffuse_color = max(dir_dot_norm, 0.0) * I_diffuse
-            v = (-position) / position.norm()
+            v = -position.normalized()
             r = tl.reflect(-ray_direction, normal)
             r_dot_v = max(r.dot(v), 0.0)
             pf = pow(r_dot_v, shininess)
