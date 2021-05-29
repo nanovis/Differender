@@ -28,6 +28,9 @@ diffuse = 0.5
 specular = 0.5
 shininess = 32.0
 delta = step_size / 4.0
+cam_up = tl.vec3(0.0, 1.0, 0.0)
+cam_center = tl.vec3(0.0)
+cam_pos = tl.vec3(0.0, 0.0, 1.0)
 
 
 @ti.func
@@ -36,14 +39,6 @@ def low_high_frac(x: float):
     high = low + 1
     frac = x - low
     return low, high, frac
-
-
-@ti.func
-def sample_volume(x: int, y: int, z: float):
-    z_low, z_high, fraction = low_high_frac(z)
-    scalar_low = data_field[x, y, z_low]
-    scalar_high = data_field[x, y, z_high]
-    return tl.mix(scalar_low, scalar_high, fraction)
 
 
 @ti.func
@@ -89,21 +84,37 @@ def get_normal(x: float, y: float, z: float):
     return n.normalized()
 
 
+@ti.func
+def calc_in_out(view_pos, view_dir):
+    return 0.0, 0.0  # todo
+
+
 @ti.kernel
-def simple_DVR():
+def direct_volume_rendering(cam_pos_x: float, cam_pos_y: float, cam_pos_z: float, view_u: float, view_v: float):
+    psfx = ti.static(float(pixels.shape[0]))
+    psfy = ti.static(float(pixels.shape[1]))
+    I_ambient = ti.static(tl.vec3(ambient))
+    I_diffuse = ti.static(tl.vec3(diffuse))
+    I_specular = ti.static(tl.vec3(specular))
+
+    cam_position = tl.vec3(cam_pos_x, cam_pos_y, cam_pos_z)
+    looking_direction = (cam_center - cam_position).normalized()
+    right_dir = tl.cross(looking_direction, cam_up).normalized()
+    up_dir = tl.cross(right_dir, looking_direction).normalized()
+    right_axis_len_vec = right_dir * view_u
+    up_axis_len_vec = up_dir * view_v
     for x, y in pixels:
-        idx_x = x // scaling
-        idx_y = y // scaling
-        ray_direction = tl.vec3(0.0, 0.0, 1.0)
-        I_ambient = tl.vec3(ambient)
-        I_diffuse = tl.vec3(diffuse)
-        I_specular = tl.vec3(specular)
+        view_pos = cam_position - 0.5 * up_axis_len_vec - 0.5 * right_axis_len_vec
+        view_pos += float(x) / psfx * right_axis_len_vec
+        view_pos += float(y) / psfy * up_axis_len_vec
+        in_pos, out_pos = calc_in_out(view_pos, looking_direction)
+        max_marching_steps = int((in_pos - out_pos).norm() / step_size)
+        ray_direction = looking_direction
         composite_color = tl.vec4(0.0)
-        max_marching_steps = int(slice_num / step_size)
-        position = tl.vec3(idx_x, idx_y, 0.0)
+        position = in_pos
         for step in range(max_marching_steps):
-            marching_z_pos = position.z
-            scalar = sample_volume(idx_x, idx_y, marching_z_pos)
+            scalar = sample_volume_trilinear(position.x, position.y,
+                                             position.z)  # todo: fixed coordinate system in texture
             src_color = sample_transfer_function(scalar)
             opacity = src_color.w
             new_src = tl.vec4(src_color.xyz * opacity, opacity)
@@ -131,6 +142,6 @@ def simple_DVR():
 # TODO: super slow, need to improve speed
 gui = ti.GUI("SciVis Slicing", res=(width * scaling, height * scaling), fast_gui=True)
 while gui.running:
-    simple_DVR()
+    direct_volume_rendering(0.0, 0.0, 0.0, 0.0, 0.0)
     gui.set_image(pixels)
     gui.show()
