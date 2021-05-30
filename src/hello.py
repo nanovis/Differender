@@ -148,7 +148,7 @@ def render_box(cam_pos_x: float, cam_pos_y: float, cam_pos_z: float, view_u: flo
         if intersected:
             in_pos = in_pos * 0.5 + 0.5
             out_pos = out_pos * 0.5 + 0.5
-            pixels[x, y] = in_pos
+            pixels[x, y] = in_pos - out_pos
 
 
 @ti.kernel
