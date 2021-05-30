@@ -22,7 +22,7 @@ transfer_function.from_numpy(transfer_function_data)
 # mesc
 slice_num = int(slice_num)
 # DVR parameters
-step_size = 0.425  # TODO: tune the step size
+step_size = 0.0025
 opacity_threshold = 0.95
 ambient = 0.5
 diffuse = 0.5
@@ -67,7 +67,7 @@ def sample_volume_trilinear(x: float, y: float, z: float):
 
 @ti.func
 def sample_transfer_function(scalar: float):
-    length = transfer_function.shape[0]
+    length = ti.static(transfer_function.shape[0])
     val = length * scalar
     low, high, frac = low_high_frac(val)
     val_low = transfer_function[low]
@@ -158,6 +158,7 @@ def direct_volume_rendering(cam_pos_x: float, cam_pos_y: float, cam_pos_z: float
     I_ambient = ti.static(tl.vec3(ambient))
     I_diffuse = ti.static(tl.vec3(diffuse))
     I_specular = ti.static(tl.vec3(specular))
+    shape = ti.static(tl.vec3(data_field.shape[0], data_field.shape[1], data_field.shape[2]))
 
     cam_position = tl.vec3(cam_pos_x, cam_pos_y, cam_pos_z)
     looking_direction = (cam_center - cam_position).normalized()
@@ -166,39 +167,44 @@ def direct_volume_rendering(cam_pos_x: float, cam_pos_y: float, cam_pos_z: float
     right_axis_len_vec = right_dir * view_u
     up_axis_len_vec = up_dir * view_v
     for x, y in pixels:
+        # orthogonal projection
         view_pos = cam_position - 0.5 * up_axis_len_vec - 0.5 * right_axis_len_vec
         view_pos += float(x) / psfx * right_axis_len_vec
         view_pos += float(y) / psfy * up_axis_len_vec
-        in_pos, out_pos = calc_in_out(view_pos, looking_direction)
-        max_marching_steps = int((in_pos - out_pos).norm() / step_size)
-        ray_direction = looking_direction
-        composite_color = tl.vec4(0.0)
-        position = in_pos
-        for step in range(max_marching_steps):
-            scalar = sample_volume_trilinear(position.x, position.y,
-                                             position.z)  # todo: fixed coordinate system in texture
-            src_color = sample_transfer_function(scalar)
-            opacity = src_color.w
-            new_src = tl.vec4(src_color.xyz * opacity, opacity)
-            # shading
-            normal = get_normal(position.x, position.y, position.z)
-            dir_dot_norm = ray_direction.dot(normal)
-
-            diffuse_color = max(dir_dot_norm, 0.0) * I_diffuse
-            v = -position.normalized()
-            r = tl.reflect(-ray_direction, normal)
-            r_dot_v = max(r.dot(v), 0.0)
-            pf = pow(r_dot_v, shininess)
-            specular_color = I_specular * pf
-
-            shading_color = tl.vec4(I_ambient + diffuse_color + specular_color, 1.0) * new_src
-            # compositing
-            composite_color = (1.0 - composite_color.w) * shading_color + composite_color
-            if composite_color.w > opacity_threshold:
-                break
-            position += ray_direction * step_size
-
-        pixels[x, y] = composite_color.xyz
+        # test ray intersection
+        in_pos, out_pos, intersected = calc_in_out(view_pos, looking_direction)
+        if intersected:
+            tex_in_pos = in_pos * 0.5 + 0.5
+            tex_out_pos = out_pos * 0.5 + 0.5
+            max_marching_steps = int((tex_in_pos - tex_out_pos).norm() / step_size)
+            ray_direction = (tex_in_pos - tex_out_pos).normalized()
+            composite_color = tl.vec4(0.0)
+            tex_position = tex_in_pos
+            for step in range(max_marching_steps):
+                unnormalized_tex_pos = tex_position * shape
+                scalar = sample_volume_trilinear(unnormalized_tex_pos.x, unnormalized_tex_pos.y,
+                                                 unnormalized_tex_pos.z)
+                src_color = sample_transfer_function(scalar)
+                opacity = src_color.w
+                new_src = tl.vec4(src_color.xyz * opacity, opacity)
+                # shading
+                normal = get_normal(unnormalized_tex_pos.x, unnormalized_tex_pos.y, unnormalized_tex_pos.z)
+                dir_dot_norm = ray_direction.dot(normal)
+                diffuse_color = max(dir_dot_norm, 0.0) * I_diffuse
+                v = -tex_position.normalized()
+                r = tl.reflect(-ray_direction, normal)
+                r_dot_v = max(r.dot(v), 0.0)
+                pf = pow(r_dot_v, shininess)
+                specular_color = I_specular * pf
+                shading_color = tl.vec4(I_ambient + diffuse_color + specular_color, 1.0) * new_src
+                # compositing
+                composite_color = (1.0 - composite_color.w) * shading_color + composite_color
+                if composite_color.w > opacity_threshold:
+                    break
+                tex_position += ray_direction * step_size
+            pixels[x, y] = composite_color.xyz
+        else:
+            pixels[x, y] = tl.vec3(0.0)
 
 
 def keyboard_input(gui, camera_angles, increment=1.0):
@@ -214,6 +220,7 @@ def keyboard_input(gui, camera_angles, increment=1.0):
 
 
 # TODO: super slow, need to improve speed
+# FIXME: render incorrect, seems to be data loading problem related to coordinates
 gui = ti.GUI("SciVis Slicing", res=(width * scaling, height * scaling), fast_gui=True)
 camera_angles = tl.vec2(1.0, 0.0)
 radius = 3.0
@@ -224,6 +231,7 @@ while gui.running:
     camera_pos.x = radius * math.cos(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
     camera_pos.y = radius * math.sin(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
     camera_pos.z = radius * math.cos(math.radians(camera_angles.x))
-    render_box(camera_pos.x, camera_pos.y, camera_pos.z, 4.0, 4.0)
+    print(camera_angles)
+    direct_volume_rendering(camera_pos.x, camera_pos.y, camera_pos.z, 4.0, 4.0)
     gui.set_image(pixels)
     gui.show()
