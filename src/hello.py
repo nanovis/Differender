@@ -2,6 +2,7 @@ import taichi as ti
 import utils
 import numpy as np
 import taichi_glsl as tl
+import math
 
 ti.init(arch=ti.cuda)
 data = utils.load_head_data()
@@ -30,7 +31,6 @@ shininess = 32.0
 delta = step_size / 4.0
 cam_up = tl.vec3(0.0, 1.0, 0.0)
 cam_center = tl.vec3(0.0)
-cam_pos = tl.vec3(0.0, 0.0, 1.0)
 
 
 @ti.func
@@ -85,8 +85,70 @@ def get_normal(x: float, y: float, z: float):
 
 
 @ti.func
+def on_box(pos):
+    eps = ti.static(0.00001)
+    x = ti.static(pos.x)
+    y = ti.static(pos.y)
+    z = ti.static(pos.z)
+    return (((1.0 - eps <= x <= 1.0 + eps) or (-1.0 - eps <= x <= -1.0 + eps)) and -1 <= y <= 1 and -1 <= z <= 1) \
+           or (((1.0 - eps <= y <= 1.0 + eps) or (-1.0 - eps <= y <= -1.0 + eps)) and -1 <= x <= 1 and -1 <= z <= 1) \
+           or (((1.0 - eps <= z <= 1.0 + eps) or (-1.0 - eps <= z <= -1.0 + eps)) and -1 <= y <= 1 and -1 <= x <= 1)
+
+
+@ti.func
 def calc_in_out(view_pos, view_dir):
-    return 0.0, 0.0  # todo
+    a = ti.static(view_dir.x)
+    b = ti.static(view_dir.y)
+    c = ti.static(view_dir.z)
+    x = ti.static(view_pos.x)
+    y = ti.static(view_pos.y)
+    z = ti.static(view_pos.z)
+    t_x_pos1 = (1 - x) / a
+    t_x_min1 = (-1 - x) / a
+    t_y_pos1 = (1 - y) / b
+    t_y_min1 = (-1 - y) / b
+    t_z_pos1 = (1 - z) / c
+    t_z_min1 = (-1 - z) / c
+    vec = [t_x_pos1, t_x_min1, t_y_pos1, t_y_min1, t_z_pos1, t_z_min1]
+    ts = tl.vec2(0.0)
+    found_one = False
+    for i in ti.static(range(6)):
+        t = vec[i]
+        if not tl.isnan(t) and t >= 0 and on_box(view_pos + t * view_dir):
+            if found_one:
+                ts[1] = t
+            else:
+                ts[0] = t
+                found_one = True
+
+    t_in = ts.min()
+    t_out = ts.max()
+    in_pos = view_pos + t_in * view_dir
+    out_pos = view_pos + t_out * view_dir
+    return in_pos, out_pos, found_one
+
+
+@ti.kernel
+def render_box(cam_pos_x: float, cam_pos_y: float, cam_pos_z: float, view_u: float, view_v: float):
+    psfx = ti.static(float(pixels.shape[0]))
+    psfy = ti.static(float(pixels.shape[1]))
+    cam_position = tl.vec3(cam_pos_x, cam_pos_y, cam_pos_z)
+    looking_direction = (cam_center - cam_position).normalized()
+    right_dir = tl.cross(looking_direction, cam_up).normalized()
+    up_dir = tl.cross(right_dir, looking_direction).normalized()
+    right_axis_len_vec = right_dir * view_u
+    up_axis_len_vec = up_dir * view_v
+
+    for x, y in pixels:
+        pixels[x, y].fill(0.0)
+        view_pos = cam_position - 0.5 * up_axis_len_vec - 0.5 * right_axis_len_vec
+        view_pos += float(x) / psfx * right_axis_len_vec
+        view_pos += float(y) / psfy * up_axis_len_vec
+        in_pos, out_pos, intersected = calc_in_out(view_pos, looking_direction)
+        if intersected:
+            in_pos = in_pos * 0.5 + 0.5
+            out_pos = out_pos * 0.5 + 0.5
+            pixels[x, y] = in_pos
 
 
 @ti.kernel
@@ -139,9 +201,29 @@ def direct_volume_rendering(cam_pos_x: float, cam_pos_y: float, cam_pos_z: float
         pixels[x, y] = composite_color.xyz
 
 
+def keyboard_input(gui, camera_angles, increment=1.0):
+    gui.get_event()
+    if gui.is_pressed('w'):
+        camera_angles.y += increment
+    elif gui.is_pressed('s'):
+        camera_angles.y -= increment
+    elif gui.is_pressed('a'):
+        camera_angles.x = min(179.0, camera_angles.x + increment)
+    elif gui.is_pressed('d'):
+        camera_angles.x = max(1.0, camera_angles.x - increment)
+
+
 # TODO: super slow, need to improve speed
 gui = ti.GUI("SciVis Slicing", res=(width * scaling, height * scaling), fast_gui=True)
+camera_angles = tl.vec2(1.0, 0.0)
+radius = 3.0
+camera_pos = tl.vec3(0.0, 0.0, radius)
 while gui.running:
-    direct_volume_rendering(0.0, 0.0, 0.0, 0.0, 0.0)
+    # direct_volume_rendering(0.0, 0.0, 0.0, 0.0, 0.0)
+    keyboard_input(gui, camera_angles)
+    camera_pos.x = radius * math.cos(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
+    camera_pos.y = radius * math.sin(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
+    camera_pos.z = radius * math.cos(math.radians(camera_angles.x))
+    render_box(camera_pos.x, camera_pos.y, camera_pos.z, 4.0, 4.0)
     gui.set_image(pixels)
     gui.show()
