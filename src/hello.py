@@ -208,28 +208,39 @@ def direct_volume_rendering(cam_pos_x: float, cam_pos_y: float, cam_pos_z: float
 
 def keyboard_input(gui, camera_angles, increment=1.0):
     gui.get_event()
+    some_event = False
     if gui.is_pressed('w'):
         camera_angles.y += increment
+        some_event = True
     elif gui.is_pressed('s'):
         camera_angles.y -= increment
+        some_event = True
     elif gui.is_pressed('a'):
         camera_angles.x = min(179.0, camera_angles.x + increment)
+        some_event = True
     elif gui.is_pressed('d'):
         camera_angles.x = max(1.0, camera_angles.x - increment)
+        some_event = True
+    return some_event
 
 
 # TODO: super slow, need to improve speed
 # FIXME: render incorrect, seems to be data loading problem related to coordinates
-gui = ti.GUI("SciVis Slicing", res=(width * scaling, height * scaling), fast_gui=True)
+reference_window = ti.GUI("SciVis DVR reference", res=(width * scaling, height * scaling), fast_gui=True)
+differender_window = ti.GUI("SciVis DVR differender", res=(width * scaling, height * scaling), fast_gui=True)
 camera_angles = tl.vec2(100.0, -268.0)
 radius = 3.0
 camera_pos = tl.vec3(0.0, 0.0, radius)
-while gui.running:
-    keyboard_input(gui, camera_angles)
-    camera_pos.x = radius * math.cos(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
-    camera_pos.y = radius * math.sin(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
-    camera_pos.z = radius * math.cos(math.radians(camera_angles.x))
-    print(camera_angles)
-    direct_volume_rendering(camera_pos.x, camera_pos.y, camera_pos.z, 4.0, 4.0)
-    gui.set_image(pixels)
-    gui.show()
+need_render = True
+while reference_window.running:
+    if need_render:
+        camera_pos.x = radius * math.cos(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
+        camera_pos.y = radius * math.sin(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
+        camera_pos.z = radius * math.cos(math.radians(camera_angles.x))
+        print(f"camera position {camera_pos} , camera polar coordinate: {camera_angles}")
+        direct_volume_rendering(camera_pos.x, camera_pos.y, camera_pos.z, 4.0, 4.0)
+        reference_window.set_image(pixels)
+        differender_window.set_image(pixels)
+    need_render = keyboard_input(reference_window, camera_angles)
+    reference_window.show()
+    differender_window.show()
