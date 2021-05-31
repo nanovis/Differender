@@ -13,7 +13,6 @@ width, height, slice_num = data.shape
 scaling = 5
 data_field = ti.field(ti.f32, shape=(width, height, slice_num))
 # try looking from different axis to check memory layout issues
-width, height, slice_num = width, slice_num, height
 pixels = ti.Vector.field(3, dtype=ti.f32, shape=(width * scaling, height * scaling))
 transfer_function = ti.Vector.field(4, dtype=ti.f32, shape=transfer_function_data.shape[0])
 # materialization
@@ -96,7 +95,7 @@ def on_box(pos):
 
 
 @ti.func
-def calc_in_out(view_pos, view_dir):
+def calc_in_out(view_pos, view_dir):  # TODO: changed this to ray marching
     a = ti.static(view_dir.x)
     b = ti.static(view_dir.y)
     c = ti.static(view_dir.z)
@@ -222,11 +221,10 @@ def keyboard_input(gui, camera_angles, increment=1.0):
 # TODO: super slow, need to improve speed
 # FIXME: render incorrect, seems to be data loading problem related to coordinates
 gui = ti.GUI("SciVis Slicing", res=(width * scaling, height * scaling), fast_gui=True)
-camera_angles = tl.vec2(1.0, 0.0)
+camera_angles = tl.vec2(100.0, -268.0)
 radius = 3.0
 camera_pos = tl.vec3(0.0, 0.0, radius)
 while gui.running:
-    # direct_volume_rendering(0.0, 0.0, 0.0, 0.0, 0.0)
     keyboard_input(gui, camera_angles)
     camera_pos.x = radius * math.cos(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
     camera_pos.y = radius * math.sin(math.radians(camera_angles.y)) * math.sin(math.radians(camera_angles.x))
