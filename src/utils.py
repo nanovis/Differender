@@ -43,10 +43,13 @@ def _load_head_data():
             y_idx_base = y * dims[0]
             for x in range(dims[0]):
                 data_3d[x, y, z] = data[x + y_idx_base + z_idx_base]
-    return dims, data_3d
+    return dims, data_3d, data
 
 
 if __name__ == "__main__":
-    # dims, data = _load_head_data()
+    dims, data3d, raw = _load_head_data()
+    raw = raw.reshape(data3d.shape[2], data3d.shape[1], data3d.shape[0]).transpose((2, 1, 0))
+    diff = ((data3d - raw) ** 2).sum()
+    print(diff)
     # dump_data(data, "./data/skewed_head.pickle")
-    print(load_transfer_function())
+    # print(load_transfer_function())
