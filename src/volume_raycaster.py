@@ -209,8 +209,6 @@ class VolumeRaycaster():
                         specular = self.specular * pow(r_dot_v, self.shininess)
                         shaded_color = tl.vec4((self.ambient + diffuse + specular) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
                         color += (1.0 - color.w) * shaded_color # Composite color
-                        # color = tl.vec4(normal, 1.0)
-                        # break
                     cnt += 1
                 # Save result to global buffers
                 self.render[i, j] = color.xyz
@@ -249,9 +247,9 @@ def in_circles(i, y=0.7, dist=2.5):
 def rotate_camera(gui):
     gui.get_event()
     if gui.is_pressed('d'):
-        return 0.1
-    elif gui.is_pressed('a'):
         return -0.1
+    elif gui.is_pressed('a'):
+        return 0.1
     else:
         return 0.0
 
@@ -262,9 +260,7 @@ if __name__ == '__main__':
     # ti.init(arch=ti.cpu, debug=True, excepthook=True, log_level=ti.TRACE)
     ti.init(arch=ti.gpu)
     gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True)
-    gui.slider('Shininess', 0, 1024)
-
-
+    # Data
     tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
                                 [0.3308, 0.1512, 0.6418, 0.8293, 0.0000],
                                 [0.3508, 0.1512, 0.6418, 0.8293, 0.5465],
@@ -275,7 +271,7 @@ if __name__ == '__main__':
                                 [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy().astype(np.float32)
     vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500')
     vol = vol_ds[0]['vol'].permute(2, 0, 1).contiguous().numpy().astype(np.float32)
-    # vol = (load_head_data() / float(np.iinfo(np.uint16).max)).astype(np.float32)
+    # Renderer
     vr = VolumeRaycaster(volume_resolution=vol.shape, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
     vr.set_volume(vol)
     vr.set_tf_tex(tf)
