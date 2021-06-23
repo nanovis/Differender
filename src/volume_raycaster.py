@@ -1,6 +1,8 @@
 import taichi as ti
 import taichi_glsl as tl
 
+import timeit
+
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -70,17 +72,23 @@ class VolumeRaycaster():
         self.fov_rad = np.radians(fov)
         self.near, self.far = nearfar
         # Taichi Fields
-        self.volume = ti.field(ti.f32, shape=volume_resolution)
+        self.volume = ti.field(ti.f32)
         self.tf_tex = ti.Vector.field(4, dtype=ti.f32, shape=tf_resolution)
-        self.render = ti.Vector.field(3, dtype=ti.f32, shape=render_resolution)
-        self.opacity = ti.field(ti.f32, shape=render_resolution)
+        self.render = ti.Vector.field(3, dtype=ti.f32)
         self.ambient = 0.4
         self.diffuse = 0.8
         self.specular = 0.3
         self.shininess = 32.0
         self.light_color = tl.vec3(1.0)
+        volume_resolution = tuple(map(lambda d: d//4, volume_resolution))
+        render_resolution = tuple(map(lambda d: d//16, render_resolution))
+        ti.root.dense(ti.ijk, volume_resolution).dense(ti.ijk, (4,4,4)).place(self.volume)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij,  (16, 16)).place(self.render)
 
-    def set_volume(self, volume): self.volume.from_numpy(volume)
+
+    def set_volume(self, volume):
+        self.volume.from_numpy(volume)
+
     def set_tf_tex(self, tf_tex): self.tf_tex.from_numpy(tf_tex)
 
     @ti.func
@@ -212,10 +220,8 @@ class VolumeRaycaster():
                     cnt += 1
                 # Save result to global buffers
                 self.render[i, j] = color.xyz
-                self.opacity[i,j] = color.w
             else: # Skip empty space
                 self.render[i, j] = tl.vec3(0.0)
-                self.opacity[i,j] = 0.0
 
     @ti.kernel
     def draw_entry_points(self, cam_pos_x: float, cam_pos_y: float, cam_pos_z: float):
@@ -255,9 +261,9 @@ def rotate_camera(gui):
 
 
 if __name__ == '__main__':
-    RESOLUTION = (300, 300)
+    RESOLUTION = (640, 640)
     TF_RESOLUTION = 128
-    # ti.init(arch=ti.cpu, debug=True, excepthook=True, log_level=ti.TRACE)
+    # ti.init(arch=ti.cpu, debug=True, excepthook=True, log_level=ti.TRACE, print_ir=True)
     ti.init(arch=ti.gpu)
     gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True)
     # Data
@@ -277,7 +283,7 @@ if __name__ == '__main__':
     vr.set_tf_tex(tf)
     t = np.pi * 1.5
     while gui.running:
-        vr.raycast(*in_circles(t), 2.0)
+        vr.raycast(*in_circles(t), 4.0)
         # vr.draw_entry_points(0.0, 0.1, 3.0)
         t += rotate_camera(gui)
         gui.set_image(vr.render)
