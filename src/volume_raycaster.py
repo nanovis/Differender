@@ -184,14 +184,13 @@ class VolumeRaycaster():
         return tl.mix(self.tf_tex[low], min(self.tf_tex[high], ti.static(self.tf_tex.shape[0]-1)), frac)
 
     @ti.kernel
-    def compute_entry_exit(self, cam_pos_x: float, cam_pos_y: float, cam_pos_z: float, sampling_rate: float):
-        ''' Produce a rendering
+    def compute_entry_exit(self, cam_pos_x: float, cam_pos_y: float, cam_pos_z: float):
+        ''' Produce entry, exit, rays, mask buffers
 
         Args:
             cam_pos_x (float): Camera Pos x
             cam_pos_y (float): Camera Pos y
             cam_pos_z (float): Camera Pos z
-            sampling_rate (float): Sampling rate along the ray
         '''
         for i, j in self.render: # For all pixels
             max_x = ti.static(float(self.render.shape[0]))
@@ -213,7 +212,7 @@ class VolumeRaycaster():
 
     @ti.kernel
     def raycast(self, cam_pos_x: float, cam_pos_y: float, cam_pos_z: float, sampling_rate: float):
-        ''' Produce a rendering
+        ''' Produce a rendering. Run compute_entry_exit first!
 
         Args:
             cam_pos_x (float): Camera Pos x
@@ -246,11 +245,6 @@ class VolumeRaycaster():
                         shaded_color = (self.ambient + diffuse + specular) * sample_color.xyz * sample_color.w * self.light_color
                         self.render[i, j] += (1.0 - self.opacity[i,j]) * shaded_color
                         self.opacity[i, j] += (1.0 - self.opacity[i,j]) * sample_color.w
-
-                # color = color + (1.0 - color.w) * shaded_color # Composite color
-                # color += tl.vec4(1.0)
-            # Save result to global buffers
-            # self.render[i, j] += color.xyz
 
     @ti.kernel
     def compute_loss(self):
@@ -340,15 +334,14 @@ if __name__ == '__main__':
     lr = 1
     for i in range(100):
         with ti.Tape(vr.loss):
-            vr.compute_entry_exit(*in_circles(t), 4.0)
+            vr.compute_entry_exit(*in_circles(t))
             vr.raycast(*in_circles(t), 4.0)
             vr.compute_loss()
         vr.apply_grad(lr)
-        print('Max Grad: ', vr.tf_tex.grad.to_numpy().max())
+        print('Loss: ', vr.loss, 'Max Grad: ', vr.tf_tex.grad.to_numpy().max())
         ti.imwrite(vr.render, f'diff_test/step_{i:05d}.png')
         gui.set_image(vr.render)
         gui.show()
-        print('Loss: ', vr.loss)
     # while gui.running:
     #     vr.clear_framebuffer()
     #     vr.compute_entry_exit(*in_circles(t), 4.0)
