@@ -73,7 +73,7 @@ class VolumeRaycaster():
         self.near, self.far = nearfar
         # Taichi Fields
         self.volume = ti.field(ti.f32, needs_grad=True)
-        self.tf_tex    = ti.Vector.field(4, dtype=ti.f32, shape=tf_resolution, needs_grad=True)
+        self.tf_tex    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.render    = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
         self.opacity   = ti.field(ti.f32, needs_grad=True)
         self.reference = ti.Vector.field(3, dtype=ti.f32)
@@ -90,8 +90,11 @@ class VolumeRaycaster():
         volume_resolution = tuple(map(lambda d: d//4, volume_resolution))
         render_resolution = tuple(map(lambda d: d//16, render_resolution))
         ti.root.dense(ti.ijk, volume_resolution).dense(ti.ijk, (4,4,4)).place(self.volume)
-        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.render, self.opacity, self.reference)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.render, self.render.grad, self.opacity, self.opacity.grad)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.reference)
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.entry, self.exit, self.mask, self.rays)
+        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
+        ti.root.lazy_grad()
 
 
     def set_volume(self, volume):
@@ -307,8 +310,8 @@ if __name__ == '__main__':
     RESOLUTION = (640, 640)
     RESOLUTION_T = tuple(map(lambda d: d//16, RESOLUTION))
     TF_RESOLUTION = 128
-    # ti.init(arch=ti.cpu, debug=True, excepthook=True, log_level=ti.TRACE)
-    ti.init(arch=ti.gpu)
+    # ti.init(arch=ti.cpu, debug=True, excepthook=True, log_level=ti.TRACE, kernel_profiler=True)
+    ti.init(arch=ti.cuda)
     gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True)
     # Data
     tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
@@ -319,16 +322,16 @@ if __name__ == '__main__':
                                 [0.4504, 0.1512, 0.6418, 0.8293, 0.5465],
                                 [0.4704, 0.1512, 0.6418, 0.8293, 0.0000],
                                 [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy().astype(np.float32)
-    tf_gray = np.ones((TF_RESOLUTION, 5)).astype(np.float32) * 0.5
+    tf_gray = np.ones((TF_RESOLUTION, 4)).astype(np.float32) * 0.5
     vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500')
     vol = vol_ds[0]['vol'].permute(2, 0, 1).contiguous().numpy().astype(np.float32)
 
-    reference = ti.imread('reference.png') / 255.0
+    reference = ti.imread('reference.png').astype(np.float32) / 255.0
     # Renderer
     vr = VolumeRaycaster(volume_resolution=vol.shape, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
     vr.set_volume(vol)
     vr.set_reference(reference)
-    vr.set_tf_tex(tf)
+    vr.set_tf_tex(tf_gray)
     vr.clear_framebuffer()
     t = np.pi * 1.5
     lr = 1
@@ -344,7 +347,7 @@ if __name__ == '__main__':
         gui.show()
     # while gui.running:
     #     vr.clear_framebuffer()
-    #     vr.compute_entry_exit(*in_circles(t), 4.0)
+    #     vr.compute_entry_exit(*in_circles(t))
     #     vr.raycast(*in_circles(t), 4.0)
     #     # vr.draw_entry_points(0.0, 0.1, 3.0)
     #     t += rotate_camera(gui)
