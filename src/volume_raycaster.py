@@ -2,6 +2,7 @@ import taichi as ti
 import taichi_glsl as tl
 
 import timeit
+from argparse import ArgumentParser
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -56,7 +57,7 @@ def get_entry_exit_points(look_from, view_dir, bl, tr):
 
 @ti.data_oriented
 class VolumeRaycaster():
-    def __init__(self, volume_resolution, render_resolution, tf_resolution=128, fov=30.0, nearfar=(0.1, 100.0)):
+    def __init__(self, volume_resolution, render_resolution, max_samples=512, tf_resolution=128, fov=30.0, nearfar=(0.1, 100.0)):
         ''' Initializes Volume Raycaster. Make sure to .set_volume() and .set_tf_tex() after initialization
 
         Args:
@@ -74,14 +75,18 @@ class VolumeRaycaster():
         # Taichi Fields
         self.volume = ti.field(ti.f32, needs_grad=True)
         self.tf_tex    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
-        self.render    = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
-        self.opacity   = ti.field(ti.f32, needs_grad=True)
-        self.reference = ti.Vector.field(3, dtype=ti.f32)
+        self.render    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
+        self.output    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
+        self.reference = ti.Vector.field(4, dtype=ti.f32)
+        self.out_rgb   = ti.Vector.field(3, dtype=ti.f32)
+        self.samples   = ti.field(ti.i32)
         self.entry = ti.field(ti.f32, needs_grad=True)
         self.exit  = ti.field(ti.f32, needs_grad=True)
-        self.mask  = ti.field(ti.i32, needs_grad=True)
+        self.mask  = ti.field(ti.i32)
         self.rays  = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
         self.loss = ti.field(ti.f32, (), needs_grad=True)
+        self.max_k = ti.field(ti.i32, ())
+        self.max_samples = max_samples
         self.ambient = 0.4
         self.diffuse = 0.8
         self.specular = 0.3
@@ -90,19 +95,24 @@ class VolumeRaycaster():
         volume_resolution = tuple(map(lambda d: d//4, volume_resolution))
         render_resolution = tuple(map(lambda d: d//16, render_resolution))
         ti.root.dense(ti.ijk, volume_resolution).dense(ti.ijk, (4,4,4)).place(self.volume)
-        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.render, self.render.grad, self.opacity, self.opacity.grad)
-        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.reference)
-        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.entry, self.exit, self.mask, self.rays)
+        ti.root.dense(ti.ijk, volume_resolution).dense(ti.ijk, (4,4,4)).place(self.volume.grad)
+        ti.root.dense(ti.ijk, (*render_resolution, max_samples)).dense(ti.ijk, (16, 16, 1)).place(self.render, self.render.grad)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.samples)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.output, self.reference, self.out_rgb)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.output.grad)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.entry, self.exit)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.entry.grad, self.exit.grad)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.mask, self.rays)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.rays.grad)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
+        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad)
+
         ti.root.lazy_grad()
 
+    def set_volume(self, volume):self.volume.from_numpy(volume.astype(np.float32))
+    def set_tf_tex(self, tf_tex): self.tf_tex.from_numpy(tf_tex.astype(np.float32))
+    def set_reference(self, reference): self.reference.from_numpy(reference.astype(np.float32))
 
-    def set_volume(self, volume):
-        self.volume.from_numpy(volume)
-
-    def set_tf_tex(self, tf_tex): self.tf_tex.from_numpy(tf_tex)
-
-    def set_reference(self, reference): self.reference.from_numpy(reference)
     @ti.func
     def get_ray_direction(self, orig, view_dir, x: float, y: float):
         ''' Compute ray direction for perspecive camera.
@@ -139,13 +149,14 @@ class VolumeRaycaster():
         Returns:
             float: Sampled interpolated intensity
         '''
-        pos = ((0.5*tl.vec3(x, y, z)) + 0.5) * ti.static(tl.vec3(*self.volume.shape) - 1 -1e-6)
+        pos = tl.clamp(((0.5*tl.vec3(x, y, z)) + 0.5), 0.0, 1.0) * ti.static(tl.vec3(*self.volume.shape) - 1.0 -1e-3)
         x_low, x_high, x_frac = low_high_frac(pos.x)
         y_low, y_high, y_frac = low_high_frac(pos.y)
         z_low, z_high, z_frac = low_high_frac(pos.z)
-        x_high = min(x_high, self.volume.shape[0]-1)
-        y_high = min(y_high, self.volume.shape[1]-1)
-        z_high = min(z_high, self.volume.shape[2]-1)
+
+        x_high = min(x_high, ti.static(self.volume.shape[0]-1))
+        y_high = min(y_high, ti.static(self.volume.shape[1]-1))
+        z_high = min(z_high, ti.static(self.volume.shape[2]-1))
         # on z_low
         v000 = self.volume[x_low, y_low, z_low]
         v100 = self.volume[x_high, y_low, z_low]
@@ -195,7 +206,7 @@ class VolumeRaycaster():
             cam_pos_y (float): Camera Pos y
             cam_pos_z (float): Camera Pos z
         '''
-        for i, j in self.render: # For all pixels
+        for i, j in self.entry: # For all pixels
             max_x = ti.static(float(self.render.shape[0]))
             max_y = ti.static(float(self.render.shape[1]))
             look_from = tl.vec3(cam_pos_x, cam_pos_y, cam_pos_z)
@@ -223,36 +234,37 @@ class VolumeRaycaster():
             cam_pos_z (float): Camera Pos z
             sampling_rate (float): Sampling rate along the ray
         '''
-        for i, j in self.render: # For all pixels
+        for i, j in self.samples: # For all pixels
             look_from = tl.vec3(cam_pos_x, cam_pos_y, cam_pos_z)
             tmax = self.exit[i,j]
             ray_len = (tmax - self.entry[i,j])
             vol_diag = ti.static((tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
             light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
-            n_samples = self.mask[i,j] * ti.floor(sampling_rate * ray_len * vol_diag) + 1# Number of samples according to https://osf.io/u9qnz
+            n_samples = self.mask[i,j] * (ti.floor(sampling_rate * ray_len * vol_diag) + 1)# Number of samples according to https://osf.io/u9qnz
             tmin = self.entry[i,j] + 0.5 * ray_len / n_samples # Offset tmin as t_start
             vd = self.rays[i,j]
             for cnt in range(n_samples):
-                if self.opacity[i,j] < 0.99:
-                    pos = look_from + tl.mix(tmin, tmax, float(cnt)/float(n_samples)) * vd # Current Pos
+                k = self.samples[i, j]
+                if self.render[i,j, k-1].w < 0.99 and k < ti.static(self.max_samples):
+                    pos = look_from + tl.mix(tmin, tmax, float(cnt)/float(n_samples-1)) * vd # Current Pos
                     intensity = self.sample_volume_trilinear(pos.x, pos.y, pos.z)
                     sample_color = self.apply_transfer_function(intensity)
-                    if sample_color.w > 1e-3:
-                        normal = self.get_volume_normal(pos)
-                        light_dir = (pos - light_pos).normalized() # Direction to light source
-                        n_dot_l = max(normal.dot(light_dir), 0.0)
-                        diffuse = self.diffuse * n_dot_l
-                        r = tl.reflect(light_dir, normal) # Direction of reflected light
-                        r_dot_v = max(r.dot(-vd), 0.0)
-                        specular = self.specular * pow(r_dot_v, self.shininess)
-                        shaded_color = (self.ambient + diffuse + specular) * sample_color.xyz * sample_color.w * self.light_color
-                        self.render[i, j] += (1.0 - self.opacity[i,j]) * shaded_color
-                        self.opacity[i, j] += (1.0 - self.opacity[i,j]) * sample_color.w
+                    # if sample_color.w > 1e-3:
+                    normal = self.get_volume_normal(pos)
+                    light_dir = (pos - light_pos).normalized() # Direction to light source
+                    n_dot_l = max(normal.dot(light_dir), 0.0)
+                    diffuse = self.diffuse * n_dot_l
+                    r = tl.reflect(light_dir, normal) # Direction of reflected light
+                    r_dot_v = max(r.dot(-vd), 0.0)
+                    specular = self.specular * pow(r_dot_v, self.shininess)
+                    shaded_color = tl.vec4((self.ambient + diffuse + specular) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
+                    self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color   + self.render[i, j, k-1]
+                    self.samples[i, j] += 1
 
     @ti.kernel
     def compute_loss(self):
-        for i, j in self.render:
-            self.loss[None] += tl.summation((self.render[i,j] - self.reference[i,j])**2) / ti.static(3.0 * float(self.render.shape[0] * self.render.shape[1]))
+        for i, j in self.output:
+            self.loss[None] += tl.summation((self.output[i,j] - self.reference[i,j])**2) #/ ti.static(3.0 * float(self.output.shape[0] * self.output.shape[1]))
 
     @ti.kernel
     def apply_grad(self, lr: float):
@@ -260,34 +272,24 @@ class VolumeRaycaster():
             self.tf_tex[i] -= lr * self.tf_tex.grad[i]
             self.tf_tex[i] = ti.max(self.tf_tex[i], 0)
 
+    @ti.kernel
+    def get_final_image(self):
+        for i,j in self.samples:
+            k = self.samples[i,j] -1
+            self.output[i,j] += self.render[i,j,k]
+            self.out_rgb[i,j] += self.render[i,j,k].xyz
+            if k > self.max_k[None]:
+                self.max_k[None] = k
 
     @ti.kernel
     def clear_framebuffer(self):
-        for i,j in self.render:
-            self.render[i, j] = tl.vec3(0.0)
-            self.opacity[i,j] = 0.0
-
-    @ti.kernel
-    def draw_entry_points(self, cam_pos_x: float, cam_pos_y: float, cam_pos_z: float):
-        max_x = ti.static(float(self.render.shape[0]))
-        max_y = ti.static(float(self.render.shape[1]))
-        vol_diag = ti.static((tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
-        look_from = tl.vec3(cam_pos_x, cam_pos_y, cam_pos_z)
-        view_dir = (-look_from).normalized()
-        right_dir = tl.cross(view_dir, ti.static(tl.vec3(0.0, 1.0, 0.0))).normalized()
-        up_dir    = tl.cross(right_dir, view_dir).normalized()
-
-        bb_bl = ti.static(tl.vec3(-1.0, -1.0, -1.0)) # Bounding Box bottom left
-        bb_tr = ti.static(tl.vec3( 1.0,  1.0,  1.0)) # Bounding Box bottom right
-        for i, j in self.render: # For all pixels
-            x = (float(i) + 0.5) / max_x # Get pixel centers in range (0,1)
-            y = (float(j) + 0.5) / max_y #
-            vd = self.get_ray_direction(look_from, view_dir, x, y) # Get exact view direction to this pixel
-            tmin, tmax, hit = get_entry_exit_points(look_from, vd, bb_bl, bb_tr) # distance along vd till volume entry and exit, hit bool
-            if hit: # Shoot the ray
-                self.render[i, j] = tl.vec3(look_from + tmin * vd)
-            else:
-                self.render[i, j] = tl.vec3(0.0)
+        self.max_k[None] = 0
+        for i,j,k in self.render:
+            self.render[i, j, k] = tl.vec4(0.0)
+        for i,j in self.samples:
+            self.samples[i, j] = 1
+            self.output[i, j] = tl.vec4(0.0)
+            self.out_rgb[i,j] = tl.vec3(0.0)
 
 
 def in_circles(i, y=0.7, dist=2.5):
@@ -307,12 +309,21 @@ def rotate_camera(gui):
 
 
 if __name__ == '__main__':
-    RESOLUTION = (640, 640)
+    parser = ArgumentParser('Volume Raycaster')
+    parser.add_argument('task', type=str, help='Either forward or backward')
+    parser.add_argument('--res', type=int, default=640, help='Render Resolution')
+    parser.add_argument('--tf-res', type=int, default=128, help='Transfer Function Texture Resolution')
+    parser.add_argument('--debug', action='store_true', help='Turns on fancy logs')
+
+    args = parser.parse_args()
+    RESOLUTION = (args.res, args.res)
     RESOLUTION_T = tuple(map(lambda d: d//16, RESOLUTION))
-    TF_RESOLUTION = 128
-    # ti.init(arch=ti.cpu, debug=True, excepthook=True, log_level=ti.TRACE, kernel_profiler=True)
-    ti.init(arch=ti.cuda)
-    gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True)
+    TF_RESOLUTION = args.tf_res
+    if args.debug:
+        ti.init(arch=ti.cuda, debug=True, excepthook=True, log_level=ti.TRACE, kernel_profiler=True)
+    else:
+        ti.init(arch=ti.cuda)
+    gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True, background_color=0xffffffff)
     # Data
     tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
                                 [0.3308, 0.1512, 0.6418, 0.8293, 0.0000],
@@ -321,36 +332,65 @@ if __name__ == '__main__':
                                 [0.4297, 0.1512, 0.6418, 0.8293, 0.7660],
                                 [0.4504, 0.1512, 0.6418, 0.8293, 0.5465],
                                 [0.4704, 0.1512, 0.6418, 0.8293, 0.0000],
-                                [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy().astype(np.float32)
-    tf_gray = np.ones((TF_RESOLUTION, 4)).astype(np.float32) * 0.5
+                                [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy()
+    tf_gray = np.ones(tf.shape) * 0.5
+    tf_rand = np.random.random(tf.shape)
+    tf_randn= np.clip(tf + np.random.normal(0.0, 0.01, tf.shape), 0.0, 1.0)
     vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500')
-    vol = vol_ds[0]['vol'].permute(2, 0, 1).contiguous().numpy().astype(np.float32)
+    vol = vol_ds[0]['vol'].permute(2, 0, 1).contiguous().numpy()
+    vol_randn = np.clip(vol + np.random.normal(0.0, 0.01, vol.shape), 0.0, 1.0)
 
-    reference = ti.imread('reference.png').astype(np.float32) / 255.0
     # Renderer
     vr = VolumeRaycaster(volume_resolution=vol.shape, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
-    vr.set_volume(vol)
-    vr.set_reference(reference)
-    vr.set_tf_tex(tf_gray)
-    vr.clear_framebuffer()
     t = np.pi * 1.5
-    lr = 1
-    for i in range(100):
-        with ti.Tape(vr.loss):
+
+    if args.task == 'backward':
+        # Setup Raycaster
+        vr.set_volume(vol)
+        vr.set_tf_tex(tf*1.2)
+        vr.set_reference(ti.imread('reference.png') / 255.0)
+        # Optimize for Transfer Function
+        lr = 1.0
+        for i in range(100):
+            vr.clear_framebuffer()
+            with ti.Tape(vr.loss):
+                vr.compute_entry_exit(*in_circles(t))
+                vr.raycast(*in_circles(t), 0.3)
+                vr.get_final_image()
+                vr.compute_loss()
+                # vr.apply_grad(lr)
+            gui.set_image(vr.out_rgb)
+            gui.show()
+            print('========== Loss: ', vr.loss, ' ==========')
+            print('Max Samples:', vr.max_k)
+            print('Gradients:')
+            render_grad_np = vr.render.grad.to_numpy()
+            print(f'\t Loss: {vr.loss.grad.to_numpy().max()}\n',
+                f'\t Output: {vr.output.grad.to_numpy().max(axis=(0,1))}\n',
+                f'\t Render: {render_grad_np.max(axis=(0,1,2))}\n',
+                f'\t Volume: {vr.volume.grad.to_numpy().max()}\n',
+                f'\t TF Tex: {vr.tf_tex.grad.to_numpy().max(axis=0)}')
+            # ti.imwrite(vr.output, f'diff_test/step_{i:05d}.png')
+            plt.plot(render_grad_np.max(axis=(0,1))[:vr.max_k[None]])
+            plt.savefig('rendergrads_max.png', dpi=200)
+            plt.clf()
+            plt.plot(render_grad_np.min(axis=(0,1))[:vr.max_k[None]])
+            plt.savefig('rendergrads_min.png', dpi=200)
+    elif args.task == 'forward':
+        # Setup Raycaster
+        vr.set_volume(vol)
+        vr.set_tf_tex(tf)
+        vr.clear_framebuffer()
+        # Render volume
+        while gui.running:
+            vr.clear_framebuffer()
             vr.compute_entry_exit(*in_circles(t))
-            vr.raycast(*in_circles(t), 4.0)
-            vr.compute_loss()
-        vr.apply_grad(lr)
-        print('Loss: ', vr.loss, 'Max Grad: ', vr.tf_tex.grad.to_numpy().max())
-        ti.imwrite(vr.render, f'diff_test/step_{i:05d}.png')
-        gui.set_image(vr.render)
-        gui.show()
-    # while gui.running:
-    #     vr.clear_framebuffer()
-    #     vr.compute_entry_exit(*in_circles(t))
-    #     vr.raycast(*in_circles(t), 4.0)
-    #     # vr.draw_entry_points(0.0, 0.1, 3.0)
-    #     t += rotate_camera(gui)
-    #     gui.set_image(vr.render)
-    #     # ti.imwrite(vr.render, 'reference.png')
-    #     gui.show()
+            vr.raycast(*in_circles(t), 1.0)
+            vr.get_final_image()
+            t += rotate_camera(gui)
+            # print('Max Samples:', vr.max_k)
+            gui.set_image(vr.out_rgb)
+            # ti.imwrite(vr.output, 'reference.png')
+            gui.show()
+    else:
+        raise Exception(f'invalid task given: {args.task}')
