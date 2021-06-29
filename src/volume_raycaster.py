@@ -29,6 +29,11 @@ def low_high_frac(x: float):
     return int(low), int(high), frac
 
 @ti.func
+def premultiply_alpha(rgba):
+    rgba.xyz *= rgba.w
+    return rgba
+
+@ti.func
 def get_entry_exit_points(look_from, view_dir, bl, tr):
     ''' Computes the entry and exit points of a given ray
 
@@ -149,7 +154,7 @@ class VolumeRaycaster():
         Returns:
             float: Sampled interpolated intensity
         '''
-        pos = tl.clamp(((0.5*tl.vec3(x, y, z)) + 0.5), 0.0, 1.0) * ti.static(tl.vec3(*self.volume.shape) - 1.0 -1e-3)
+        pos = tl.clamp(((0.5*tl.vec3(x, y, z)) + 0.5), 0.0, 1.0) * ti.static(tl.vec3(*self.volume.shape) - 1.0 -1e-4)
         x_low, x_high, x_frac = low_high_frac(pos.x)
         y_low, y_high, y_frac = low_high_frac(pos.y)
         z_low, z_high, z_frac = low_high_frac(pos.z)
@@ -193,9 +198,10 @@ class VolumeRaycaster():
         Returns:
             tl.vec4: Color and opacity for given `intensity`
         '''
-        length = ti.static(float(self.tf_tex.shape[0] - 1) -1e-4)
+        length = ti.static(float(self.tf_tex.shape[0] - 1))
         low, high, frac = low_high_frac(intensity * length)
-        return tl.mix(self.tf_tex[low], min(self.tf_tex[high], ti.static(self.tf_tex.shape[0]-1)), frac)
+        return tl.mix(self.tf_tex[low], self.tf_tex[min(high, ti.static(self.tf_tex.shape[0]-1))], frac)
+        # return self.tf_tex[ti.cast(ti.floor(intensity * ti.static(float(self.tf_tex.shape[0] -1)-1e-4)), ti.i32)]
 
     @ti.kernel
     def compute_entry_exit(self, cam_pos_x: float, cam_pos_y: float, cam_pos_z: float):
@@ -249,17 +255,17 @@ class VolumeRaycaster():
                     pos = look_from + tl.mix(tmin, tmax, float(cnt)/float(n_samples-1)) * vd # Current Pos
                     intensity = self.sample_volume_trilinear(pos.x, pos.y, pos.z)
                     sample_color = self.apply_transfer_function(intensity)
-                    # if sample_color.w > 1e-3:
-                    normal = self.get_volume_normal(pos)
-                    light_dir = (pos - light_pos).normalized() # Direction to light source
-                    n_dot_l = max(normal.dot(light_dir), 0.0)
-                    diffuse = self.diffuse * n_dot_l
-                    r = tl.reflect(light_dir, normal) # Direction of reflected light
-                    r_dot_v = max(r.dot(-vd), 0.0)
-                    specular = self.specular * pow(r_dot_v, self.shininess)
-                    shaded_color = tl.vec4((self.ambient + diffuse + specular) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
-                    self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color   + self.render[i, j, k-1]
-                    self.samples[i, j] += 1
+                    if sample_color.w > 1e-3:
+                        normal = self.get_volume_normal(pos)
+                        light_dir = (pos - light_pos).normalized() # Direction to light source
+                        n_dot_l = max(normal.dot(light_dir), 0.0)
+                        r = tl.reflect(light_dir, normal) # Direction of reflected light
+                        r_dot_v = max(r.dot(-vd), 0.0)
+                        specular = self.specular * pow(r_dot_v, self.shininess)
+                        shaded_color = tl.vec4((self.ambient + diffuse + specular) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
+                        self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color   + self.render[i, j, k-1]
+                        self.samples[i, j] += 1
+
 
     @ti.kernel
     def compute_loss(self):
