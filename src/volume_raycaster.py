@@ -393,7 +393,7 @@ if __name__ == '__main__':
         gui2 = ti.GUI("High sample rendering", res=RESOLUTION, fast_gui=True)
         # Setup Raycaster
         vr.set_volume(vol)
-        vr.set_tf_tex(tf_gray)
+        vr.set_tf_tex(tf*0.6)
         vr.set_reference(ti.imread('reference_skull.png') / 255.0)
         # Optimize for Transfer Function
         lr = 2.0
@@ -409,9 +409,6 @@ if __name__ == '__main__':
             vr.apply_grad(lr)
             gui.set_image(vr.out_rgb)
             gui.show()
-            vr.raycast_nondiff()
-            gui2.set_image(vr.out_rgb)
-            gui2.show()
             tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
             print(f'{i:05d} ========== Loss: ', vr.loss, ' ==========')
@@ -426,6 +423,12 @@ if __name__ == '__main__':
             grads.append(np.abs(tf_grad_np).max(axis=0))
             ti.imwrite(vr.output, f'diff_test/color_step_{i:05d}.png')
             plot_tf(tf_pt).savefig(f'diff_test/tf_step_{i:05d}.png')
+            vr.clear_framebuffer()
+            vr.compute_entry_exit(4.0, False)
+            vr.raycast_nondiff()
+            vr.get_final_image()
+            gui2.set_image(vr.out_rgb)
+            gui2.show()
         plt.cla()
         plt.clf()
         plt.plot(np.stack(grads))
