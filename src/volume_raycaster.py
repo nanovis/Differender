@@ -410,7 +410,7 @@ if __name__ == '__main__':
     parser.add_argument('--clip-grads', type=float, default=0.1, help='Clips Gradient absolute to this value')
     parser.add_argument('--lr-decay', type=float, default=0.99, help='Learning rate is multiplied with this factor every iteration')
     parser.add_argument('--bw-jitter', action='store_true', help='Enable ray jitter when in backward mode')
-    parser.add_argument('--target-tf', type=str, default='tf2', help='Target Transfer Function, see transfer_function.py')
+    parser.add_argument('--target-tf', type=str, default='tf5', help='Target Transfer Function, see transfer_function.py')
     parser.add_argument('--init-tf', type=str, default='black', help='Initial Transfer function (when optimizing)')
 
 
@@ -425,9 +425,9 @@ if __name__ == '__main__':
     # Data
     tf = get_tf(args.target_tf, TF_RESOLUTION)
     tf_init = get_tf(args.init_tf, TF_RESOLUTION)
-    vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
-    vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
-    # vol = np.swapaxes(np.fromfile('data/skull.raw', dtype=np.uint8).reshape(256,256,256), 0, 1).astype(np.float32) / 255.0
+    # vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
+    # vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
+    vol = np.swapaxes(np.fromfile('data/skull.raw', dtype=np.uint8).reshape(256,256,256), 0, 1).astype(np.float32) / 255.0
 
     # Renderer
     vr = VolumeRaycaster(volume_resolution=vol.shape, max_samples=args.max_samples, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
