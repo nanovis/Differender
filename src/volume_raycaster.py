@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 
 from torchvtk.utils import TFGenerator, tex_from_pts
 from torchvtk.datasets import TorchDataset
+from torchvtk.rendering import plot_tf
 
 from utils import load_head_data
 
@@ -368,12 +369,10 @@ if __name__ == '__main__':
     gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True, background_color=0xffffffff)
     # Data
     tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
-                                [0.2308, 0.1512, 0.6418, 0.8293, 0.0000],
-                                [0.2508, 0.1512, 0.6418, 0.8293, 0.5465],
-                                [0.2714, 0.1512, 0.6418, 0.8293, 0.7660],
-                                [0.6297, 0.1512, 0.6418, 0.8293, 0.7660],
-                                [0.6504, 0.1512, 0.6418, 0.8293, 0.5465],
-                                [0.6704, 0.1512, 0.6418, 0.8293, 0.0000],
+                                [0.1200, 0.1512, 0.6418, 0.8293, 0.0000],
+                                [0.1300, 0.1512, 0.6418, 0.8293, 0.5465],
+                                [0.1500, 0.1512, 0.6418, 0.8293, 0.7660],
+                                [0.1600, 0.1512, 0.6418, 0.8293, 0.0000],
                                 [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy()
     tf_gray = np.ones(tf.shape) * 0.5
     tf_rand = np.random.random(tf.shape)
@@ -391,10 +390,11 @@ if __name__ == '__main__':
     if args.task == 'backward':
         # Setup Raycaster
         vr.set_volume(vol)
-        vr.set_tf_tex(tf*1.2)
-        vr.set_reference(ti.imread('reference.png') / 255.0)
+        vr.set_tf_tex(tf_gray)
+        vr.set_reference(ti.imread('reference_skull.png') / 255.0)
         # Optimize for Transfer Function
         lr = 1.0
+        grads = []
         for i in range(1000):
             vr.clear_framebuffer()
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
@@ -407,7 +407,9 @@ if __name__ == '__main__':
             vr.apply_grad(lr)
             gui.set_image(vr.out_rgb)
             gui.show()
-            print('========== Loss: ', vr.loss, ' ==========')
+            tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
+            tf_grad_np = vr.tf_tex.grad.to_numpy()
+            print(f'{i:05d} ========== Loss: ', vr.loss, ' ==========')
             print('Max Samples:', vr.max_k)
             # print('Gradients:')
             # render_grad_np = vr.render.grad.to_numpy()
@@ -416,7 +418,13 @@ if __name__ == '__main__':
             #     f'\t Render: {np.abs(render_grad_np).max(axis=(0,1,2))}\n',
             #     f'\t Volume: {np.abs(vr.volume.grad.to_numpy()).max()}\n',
             #     f'\t TF Tex: {np.abs(vr.tf_tex.grad.to_numpy()).max(axis=0)}')
-            ti.imwrite(vr.output, f'diff_test/step_{i:05d}.png')
+            grads.append(np.abs(tf_grad_np).max(axis=0))
+            ti.imwrite(vr.output, f'diff_test/color_step_{i:05d}.png')
+            plot_tf(tf_pt).savefig(f'diff_test/tf_step_{i:05d}.png')
+        plt.cla()
+        plt.clf()
+        plt.plot(np.stack(grads))
+        plt.savefig(f'diff_test/tf_grad.png')
 
     elif args.task == 'forward':
         # Setup Raycaster
@@ -434,7 +442,7 @@ if __name__ == '__main__':
             t += rotate_camera(gui)
             # print('Max Samples:', vr.max_k)
             gui.set_image(vr.out_rgb)
-            # ti.imwrite(vr.output, 'reference.png')
+            ti.imwrite(vr.output, 'reference_skull.png')
             gui.show()
     else:
         raise Exception(f'invalid task given: {args.task}')
