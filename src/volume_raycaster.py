@@ -249,13 +249,7 @@ class VolumeRaycaster():
 
     @ti.kernel
     def raycast(self):
-        ''' Produce a rendering. Run compute_entry_exit first!
-
-        Args:
-            cam_pos_x (float): Camera Pos x
-            cam_pos_y (float): Camera Pos y
-            cam_pos_z (float): Camera Pos z
-        '''
+        ''' Produce a rendering. Run compute_entry_exit first! '''
         for i, j in self.samples: # For all pixels
             for cnt in range(self.n_samples[i,j]):
                 look_from = self.cam_pos[None]
@@ -281,6 +275,32 @@ class VolumeRaycaster():
                     shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
                     self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color   + self.render[i, j, k-1]
                     self.samples[i, j] += 1
+
+    @ti.kernel
+    def raycast_nondiff(self):
+        for i, j in self.samples: # For all pixels
+            for cnt in range(self.n_samples[i,j]):
+                look_from = self.cam_pos[None]
+                if self.render[i,j, 0].w < 0.99:
+                    tmax = self.exit[i, j]
+                    n_samples = self.n_samples[i, j]
+                    ray_len = (tmax - self.entry[i, j])
+                    tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
+                    vd = self.rays[i, j]
+                    pos = look_from + tl.mix(tmin, tmax, float(cnt)/float(n_samples-1)) * vd # Current Pos
+                    light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
+                    intensity = self.sample_volume_trilinear(pos)
+                    sample_color = self.apply_transfer_function(intensity)
+                    if sample_color.w > 1e-3:
+                        normal = self.get_volume_normal(pos)
+                        light_dir = (pos - light_pos).normalized() # Direction to light source
+                        n_dot_l = max(normal.dot(light_dir), 0.0)
+                        diffuse = self.diffuse * n_dot_l
+                        r = tl.reflect(light_dir, normal) # Direction of reflected light
+                        r_dot_v = max(r.dot(-vd), 0.0)
+                        specular = self.specular * pow(r_dot_v, self.shininess)
+                        shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
+                        self.render[ i, j, 0] = (1.0 - self.render[i,j, 0].w) * shaded_color   + self.render[i, j, 0]
 
 
     @ti.kernel
@@ -348,19 +368,21 @@ if __name__ == '__main__':
     gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True, background_color=0xffffffff)
     # Data
     tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
-                                [0.3308, 0.1512, 0.6418, 0.8293, 0.0000],
-                                [0.3508, 0.1512, 0.6418, 0.8293, 0.5465],
-                                [0.3714, 0.1512, 0.6418, 0.8293, 0.7660],
-                                [0.4297, 0.1512, 0.6418, 0.8293, 0.7660],
-                                [0.4504, 0.1512, 0.6418, 0.8293, 0.5465],
-                                [0.4704, 0.1512, 0.6418, 0.8293, 0.0000],
+                                [0.2308, 0.1512, 0.6418, 0.8293, 0.0000],
+                                [0.2508, 0.1512, 0.6418, 0.8293, 0.5465],
+                                [0.2714, 0.1512, 0.6418, 0.8293, 0.7660],
+                                [0.6297, 0.1512, 0.6418, 0.8293, 0.7660],
+                                [0.6504, 0.1512, 0.6418, 0.8293, 0.5465],
+                                [0.6704, 0.1512, 0.6418, 0.8293, 0.0000],
                                 [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy()
     tf_gray = np.ones(tf.shape) * 0.5
     tf_rand = np.random.random(tf.shape)
     tf_randn= np.clip(tf + np.random.normal(0.0, 0.01, tf.shape), 0.0, 1.0)
-    vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500')
-    vol = vol_ds[0]['vol'].permute(2, 0, 1).contiguous().numpy()
-    vol_randn = np.clip(vol + np.random.normal(0.0, 0.01, vol.shape), 0.0, 1.0)
+    # vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
+    # vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
+    # vol_randn = np.clip(vol + np.random.normal(0.0, 0.01, vol.shape), 0.0, 1.0)
+    vol = np.swapaxes(np.fromfile('data/skull.raw', dtype=np.uint8).reshape(256,256,256), 0, 1).astype(np.float32) / 255.0
+    print(vol.shape, vol.min(), vol.max())
 
     # Renderer
     vr = VolumeRaycaster(volume_resolution=vol.shape, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
@@ -373,11 +395,11 @@ if __name__ == '__main__':
         vr.set_reference(ti.imread('reference.png') / 255.0)
         # Optimize for Transfer Function
         lr = 1.0
-        for i in range(100):
+        for i in range(1000):
             vr.clear_framebuffer()
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
             vr.compute_entry_exit()
-            vr.calc_sample_nums(0.3)
+            vr.calc_sample_nums(0.7)
             with ti.Tape(vr.loss):
                 vr.raycast()
                 vr.get_final_image()
@@ -403,9 +425,11 @@ if __name__ == '__main__':
         vr.clear_framebuffer()
         # Render volume
         while gui.running:
+            vr.cam_pos[None] = tl.vec3(*in_circles(t))
             vr.clear_framebuffer()
-            vr.compute_entry_exit(*in_circles(t))
-            vr.raycast(*in_circles(t), 1.0)
+            vr.compute_entry_exit()
+            vr.calc_sample_nums(4.0)
+            vr.raycast_nondiff()
             vr.get_final_image()
             t += rotate_camera(gui)
             # print('Max Samples:', vr.max_k)
