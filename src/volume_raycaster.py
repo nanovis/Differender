@@ -14,6 +14,16 @@ from torchvtk.rendering import plot_tf
 
 from utils import load_head_data
 
+def fig_to_img(fig):
+    fig.set_tight_layout(True)
+    fig.set_dpi(150)
+    fig.canvas.draw()
+    w, h = fig.get_size_inches() * fig.get_dpi()
+    w, h = int(w),int(h)
+    im = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape((h, w, 3))
+    plt.close(fig)
+    return im
+
 @ti.func
 def low_high_frac(x: float):
     ''' Returns the integer value below and above, as well as the frac
@@ -89,6 +99,7 @@ class VolumeRaycaster():
         # Taichi Fields
         self.volume = ti.field(ti.f32, needs_grad=True)
         self.tf_tex    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
+        self.tf_momentum = ti.Vector.field(4, dtype=ti.f32)
         self.render    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.output    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.reference = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
@@ -122,7 +133,7 @@ class VolumeRaycaster():
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.rays)
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.rays.grad)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
-        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad)
+        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad, self.tf_momentum)
         ti.root.place(self.cam_pos)
         ti.root.place(self.cam_pos.grad)
 
@@ -314,9 +325,10 @@ class VolumeRaycaster():
             self.loss[None] += tl.summation((self.output[i,j] - self.reference[i,j])**2) / ti.static(3.0 * float(self.output.shape[0] * self.output.shape[1]))
 
     @ti.kernel
-    def apply_grad(self, lr: float):
+    def apply_grad(self, lr: float, gamma: float, max_grad: float):
         for i in self.tf_tex:
-            self.tf_tex[i] -= lr * tl.clamp(self.tf_tex.grad[i], -5e-2, 5e-2)
+            self.tf_momentum[i] = gamma * self.tf_momentum[i] + lr * tl.clamp(self.tf_tex.grad[i], -max_grad, max_grad)
+            self.tf_tex[i] -= self.tf_momentum[i]
             self.tf_tex[i] = ti.max(self.tf_tex[i], 0)
 
     @ti.kernel
@@ -384,13 +396,17 @@ if __name__ == '__main__':
     parser.add_argument('task', type=str, help='Either forward or backward')
     parser.add_argument('--res', type=int, default=400, help='Render Resolution')
     parser.add_argument('--tf-res', type=int, default=128, help='Transfer Function Texture Resolution')
-    parser.add_argument('--iterations', type=int, default=1000, help='Number of iterations for TF optimization in backward')
+    parser.add_argument('--iterations', type=int, default=120, help='Number of iterations for TF optimization in backward')
     parser.add_argument('--debug', action='store_true', help='Turns on fancy logs')
     parser.add_argument('--ref', action='store_true', help='Create Reference Images')
-    parser.add_argument('--max-samples', type=int, default=512, help='Max number of samples to use in backward pass')
-    parser.add_argument('--fw-sampling-rate', type=float, default=4.0, help='Sampling Rate to use during forward pass')
+    parser.add_argument('--max-samples', type=int, default=768, help='Max number of samples to use in backward pass')
+    parser.add_argument('--fw-sampling-rate', type=float, default=8.0, help='Sampling Rate to use during forward pass')
     parser.add_argument('--bw-sampling-rate', type=float, default=0.7, help='Sampling Rate to use during backward pass')
     parser.add_argument('--lr', type=float, default=0.1, help='Learning rate for TF optimization')
+    parser.add_argument('--mom', type=float, default=0.9, help='Momentum for gradient descent')
+    parser.add_argument('--clip-grads', type=float, default=0.1, help='Clips Gradient absolute to this value')
+    parser.add_argument('--lr-decay', type=float, default=0.99, help='Learning rate is multiplied with this factor every iteration')
+    parser.add_argument('--bw-jitter', action='store_true', help='Enable ray jitter when in backward mode')
 
 
     args = parser.parse_args()
@@ -404,19 +420,21 @@ if __name__ == '__main__':
     gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True, background_color=0xffffffff)
     # Data
     tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
-                                [0.1340, 0.5000, 0.5000, 0.5000, 0.0000],
-                                [0.1380, 0.5000, 0.5000, 0.5000, 0.7500],
-                                [0.1420, 0.5000, 0.5000, 0.5000, 0.7500],
-                                [0.1460, 0.5000, 0.5000, 0.5000, 0.0000],
+                                [0.1300, 0.5000, 0.5000, 0.5000, 0.0000],
+                                [0.1350, 0.5000, 0.5000, 0.5000, 0.7500],
+                                [0.1600, 0.5000, 0.5000, 0.5000, 0.7500],
+                                [0.1700, 0.5000, 0.5000, 0.5000, 0.0000],
                                 [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy()
+    tfgen = TFGenerator()
+    tf = tex_from_pts(tfgen.generate(), TF_RESOLUTION).permute(1,0).contiguous().numpy()
     tf_gray = np.ones(tf.shape) * 0.5
-    tf_gray[:, 3] = 0.05
+    tf_gray[:, 3] = 0.02
     tf_rand = np.random.random(tf.shape)
     tf_randn= np.clip(tf + np.random.normal(0.0, 0.1, tf.shape), 0.0, 1.0)
-    # vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
-    # vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
+    vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
+    vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
     # vol_randn = np.clip(vol + np.random.normal(0.0, 0.01, vol.shape), 0.0, 1.0)
-    vol = np.swapaxes(np.fromfile('data/skull.raw', dtype=np.uint8).reshape(256,256,256), 0, 1).astype(np.float32) / 255.0
+    # vol = np.swapaxes(np.fromfile('data/skull.raw', dtype=np.uint8).reshape(256,256,256), 0, 1).astype(np.float32) / 255.0
 
     # Renderer
     vr = VolumeRaycaster(volume_resolution=vol.shape, max_samples=args.max_samples, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
@@ -424,21 +442,37 @@ if __name__ == '__main__':
 
     if args.task == 'backward':
         gui2 = ti.GUI("High sample rendering", res=RESOLUTION, fast_gui=True)
+        render_video = ti.VideoManager(output_dir='results/bw_render', framerate=24, automatic_build=False)
+        render_video_fw = ti.VideoManager(output_dir='results/fw_render', framerate=24, automatic_build=False)
+        tf_video = ti.VideoManager(output_dir='results/tf', framerate=24, automatic_build=False)
         # Setup Raycaster
         vr.set_volume(vol)
-        vr.set_tf_tex(tf_randn)
-        vr.set_reference(ti.imread('reference_skull.png') / 255.0)
+        vr.cam_pos[None] = tl.vec3(*in_circles(t))
+        # Create Reference if necessary
+        if args.ref: # Generate new reference
+            vr.set_tf_tex(tf)
+            vr.forward(args.fw_sampling_rate, jitter=False)
+            plot_tf(vr.tf_tex.to_torch().permute(1,0).contiguous()).savefig('temp_tf_reference.png')
+            gui.set_image(vr.out_rgb)
+            gui.show()
+            gui2.set_image(vr.out_rgb)
+            gui2.show()
+            ti.imwrite(vr.output, 'temp_reference.png')
+            vr.set_reference(vr.output.to_numpy())
+        else: # Use old reference
+            vr.set_reference(ti.imread('temp_reference.png') / 255.0)
+        vr.set_tf_tex(tf_gray)
         # Optimize for Transfer Function
         lr = args.lr
         for i in range(args.iterations):
             # Optimization
-            vr.cam_pos[None] = tl.vec3(*in_circles(t))
-            vr.backward(args.bw_sampling_rate, jitter=True) # computes grads
-            vr.apply_grad(lr)
-            lr *= 0.97 # decay
+            vr.backward(args.bw_sampling_rate, jitter=args.bw_jitter) # computes grads
+            vr.apply_grad(lr, args.mom, args.clip_grads)
+            lr *= args.lr_decay # decay
 
             # Log Backward Pass
             gui.set_image(vr.out_rgb)
+            render_video.write_frame(vr.out_rgb)
             gui.show()
             tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
@@ -447,13 +481,16 @@ if __name__ == '__main__':
             print('Learning Rate:', lr)
             print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
 
-            ti.imwrite(vr.output, f'diff_test/color_step_{i:05d}.png')
-            plot_tf(tf_pt).savefig(f'diff_test/tf_step_{i:05d}.png')
+            tf_video.write_frame(np.rot90(fig_to_img(plot_tf(tf_pt)), k=3))
 
             # Standard forward pass for reference
             vr.forward(args.fw_sampling_rate, jitter=False)
             gui2.set_image(vr.out_rgb)
+            render_video_fw.write_frame(vr.out_rgb)
             gui2.show()
+        render_video.make_video(gif=True, mp4=False)
+        render_video_fw.make_video(gif=True, mp4=False)
+        tf_video.make_video(gif=True, mp4=False)
 
     elif args.task == 'forward':
         # Setup Raycaster
