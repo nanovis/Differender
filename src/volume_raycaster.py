@@ -61,6 +61,13 @@ def get_entry_exit_points(look_from, view_dir, bl, tr):
     if tmax < 0.0 or tmin > tmax: hit = False
     return tmin, tmax, hit
 
+# @ti.func
+# def random (vec2 st) {
+#     return fract(sin(dot(st.xy,
+#                          vec2(12.9898,78.233)))*
+#         43758.5453123);
+# }
+
 @ti.data_oriented
 class VolumeRaycaster():
     def __init__(self, volume_resolution, render_resolution, max_samples=512, tf_resolution=128, fov=30.0, nearfar=(0.1, 100.0)):
@@ -89,7 +96,6 @@ class VolumeRaycaster():
         self.n_samples = ti.field(ti.i32)
         self.entry = ti.field(ti.f32, needs_grad=True)
         self.exit  = ti.field(ti.f32, needs_grad=True)
-        self.mask  = ti.field(ti.i32)
         self.rays  = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
         self.loss = ti.field(ti.f32, (), needs_grad=True)
         self.max_k = ti.field(ti.i32, ())
@@ -112,7 +118,7 @@ class VolumeRaycaster():
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.output.grad)
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.entry, self.exit)
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.entry.grad, self.exit.grad)
-        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.mask, self.rays)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.rays)
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.rays.grad)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad)
@@ -213,13 +219,12 @@ class VolumeRaycaster():
         return tl.mix(self.tf_tex[low], self.tf_tex[min(high, ti.static(self.tf_tex.shape[0]-1))], frac)
 
     @ti.kernel
-    def compute_entry_exit(self):
+    def compute_entry_exit(self, sampling_rate: float, jitter: int):
         ''' Produce entry, exit, rays, mask buffers
 
         Args:
-            cam_pos_x (float): Camera Pos x
-            cam_pos_y (float): Camera Pos y
-            cam_pos_z (float): Camera Pos z
+            sampling_rate (float): Sampling rate (multiplier to Nyquist criterium)
+            jitter (int): Bool whether to apply jitter or not
         '''
         for i, j in self.entry: # For all pixels
             max_x = ti.static(float(self.render.shape[0]))
@@ -234,19 +239,15 @@ class VolumeRaycaster():
             vd = self.get_ray_direction(look_from, view_dir, x, y) # Get exact view direction to this pixel
             tmin, tmax, hit = get_entry_exit_points(look_from, vd, bb_bl, bb_tr) # distance along vd till volume entry and exit, hit bool
 
+            vol_diag = ti.static((tl.vec3(*self.volume.shape) -tl.vec3(1.0)).norm())
+            ray_len = tmax - tmin
+            n_samples = hit * (ti.floor(sampling_rate * ray_len * vol_diag) + 1) # Number of samples according to https://osf.io/u9qnz
+            if ti.static(jitter):
+                tmin += ti.random(dtype=float) * ray_len / n_samples
             self.entry[i, j] = tmin
             self.exit[i, j] = tmax
-            self.mask[i, j] = hit
             self.rays[i, j] = vd
-
-    @ti.kernel
-    def calc_sample_nums(self, sampling_rate: float):
-        for i, j in self.samples:
-            vol_diag = ti.static((tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
-            tmax = self.exit[i, j]
-            ray_len = (tmax - self.entry[i, j])
-            self.n_samples[i, j] = self.mask[i, j] * (ti.floor(
-                sampling_rate * ray_len * vol_diag) + 1)  # Number of samples according to https://osf.io/u9qnz
+            self.n_samples[i, j] = n_samples
 
     @ti.kernel
     def raycast(self):
@@ -354,8 +355,9 @@ def rotate_camera(gui):
 if __name__ == '__main__':
     parser = ArgumentParser('Volume Raycaster')
     parser.add_argument('task', type=str, help='Either forward or backward')
-    parser.add_argument('--res', type=int, default=640, help='Render Resolution')
+    parser.add_argument('--res', type=int, default=400, help='Render Resolution')
     parser.add_argument('--tf-res', type=int, default=128, help='Transfer Function Texture Resolution')
+    parser.add_argument('--iterations', type=int, default=1000, help='Number of iterations for TF optimization in backward')
     parser.add_argument('--debug', action='store_true', help='Turns on fancy logs')
 
     args = parser.parse_args()
@@ -388,18 +390,18 @@ if __name__ == '__main__':
     t = np.pi * 1.5
 
     if args.task == 'backward':
+        gui2 = ti.GUI("High sample rendering", res=RESOLUTION, fast_gui=True)
         # Setup Raycaster
         vr.set_volume(vol)
         vr.set_tf_tex(tf_gray)
         vr.set_reference(ti.imread('reference_skull.png') / 255.0)
         # Optimize for Transfer Function
-        lr = 1.0
+        lr = 2.0
         grads = []
-        for i in range(1000):
+        for i in range(args.iterations):
             vr.clear_framebuffer()
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
-            vr.compute_entry_exit()
-            vr.calc_sample_nums(0.7)
+            vr.compute_entry_exit(0.7, True)
             with ti.Tape(vr.loss):
                 vr.raycast()
                 vr.get_final_image()
@@ -407,6 +409,9 @@ if __name__ == '__main__':
             vr.apply_grad(lr)
             gui.set_image(vr.out_rgb)
             gui.show()
+            vr.raycast_nondiff()
+            gui2.set_image(vr.out_rgb)
+            gui2.show()
             tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
             print(f'{i:05d} ========== Loss: ', vr.loss, ' ==========')
@@ -435,8 +440,7 @@ if __name__ == '__main__':
         while gui.running:
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
             vr.clear_framebuffer()
-            vr.compute_entry_exit()
-            vr.calc_sample_nums(4.0)
+            vr.compute_entry_exit(4.0, False)
             vr.raycast_nondiff()
             vr.get_final_image()
             t += rotate_camera(gui)
