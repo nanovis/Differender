@@ -243,7 +243,7 @@ class VolumeRaycaster():
             vol_diag = ti.static((tl.vec3(*self.volume.shape) -tl.vec3(1.0)).norm())
             ray_len = tmax - tmin
             n_samples = hit * (ti.floor(sampling_rate * ray_len * vol_diag) + 1) # Number of samples according to https://osf.io/u9qnz
-            if ti.static(jitter):
+            if jitter:
                 tmin += ti.random(dtype=float) * ray_len / n_samples
             self.entry[i, j] = tmin
             self.exit[i, j] = tmax
@@ -276,8 +276,10 @@ class VolumeRaycaster():
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
                     shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
-                    self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color   + self.render[i, j, k-1]
+                    self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color + self.render[i, j, k-1]
                     self.samples[i, j] += 1
+                else:
+                    self.render[i, j, k] = self.render[i, j, k-1]
 
     @ti.kernel
     def raycast_nondiff(self):
@@ -294,17 +296,17 @@ class VolumeRaycaster():
                     light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
-                    if sample_color.w > 1e-3:
-                        normal = self.get_volume_normal(pos)
-                        light_dir = (pos - light_pos).normalized() # Direction to light source
-                        n_dot_l = max(normal.dot(light_dir), 0.0)
-                        diffuse = self.diffuse * n_dot_l
-                        r = tl.reflect(light_dir, normal) # Direction of reflected light
-                        r_dot_v = max(r.dot(-vd), 0.0)
-                        specular = self.specular * pow(r_dot_v, self.shininess)
-                        shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
-                        self.render[ i, j, 0] = (1.0 - self.render[i,j, 0].w) * shaded_color   + self.render[i, j, 0]
-
+                    # if sample_color.w > 1e-3:
+                    normal = self.get_volume_normal(pos)
+                    light_dir = (pos - light_pos).normalized() # Direction to light source
+                    n_dot_l = max(normal.dot(light_dir), 0.0)
+                    diffuse = self.diffuse * n_dot_l
+                    r = tl.reflect(light_dir, normal) # Direction of reflected light
+                    r_dot_v = max(r.dot(-vd), 0.0)
+                    specular = self.specular * pow(r_dot_v, self.shininess)
+                    shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
+                    self.render[ i, j, 0] = (1.0 - self.render[i,j, 0].w) * shaded_color + self.render[i, j, 0]
+                    self.samples[i, j] += 1
 
     @ti.kernel
     def compute_loss(self):
@@ -314,15 +316,25 @@ class VolumeRaycaster():
     @ti.kernel
     def apply_grad(self, lr: float):
         for i in self.tf_tex:
-            self.tf_tex[i] -= lr * self.tf_tex.grad[i]
+            self.tf_tex[i] -= lr * tl.clamp(self.tf_tex.grad[i], -5e-2, 5e-2)
             self.tf_tex[i] = ti.max(self.tf_tex[i], 0)
 
     @ti.kernel
     def get_final_image(self):
         for i,j in self.samples:
             k = self.samples[i,j] -1
-            self.output[i,j] += self.render[i,j,k]
-            self.out_rgb[i,j] += self.render[i,j,k].xyz
+            ns = self.n_samples[i,j]
+            self.output[i,j]  += self.render[i,j,ns-1]
+            self.out_rgb[i,j] += self.render[i,j,ns-1].xyz
+            if k > self.max_k[None]:
+                self.max_k[None] = k
+
+    @ti.kernel
+    def get_final_image_nondiff(self):
+        for i,j in self.samples:
+            k = self.samples[i,j] -1
+            self.output[i,j] = self.render[i,j,0]
+            self.out_rgb[i,j] = self.render[i,j,0].xyz
             if k > self.max_k[None]:
                 self.max_k[None] = k
 
@@ -340,7 +352,7 @@ class VolumeRaycaster():
         self.clear_framebuffer()
         self.compute_entry_exit(sampling_rate, jitter)
         self.raycast_nondiff()
-        self.get_final_image()
+        self.get_final_image_nondiff()
 
     def backward(self, sampling_rate=0.7, jitter=True):
         self.clear_framebuffer()
@@ -378,6 +390,7 @@ if __name__ == '__main__':
     parser.add_argument('--max-samples', type=int, default=512, help='Max number of samples to use in backward pass')
     parser.add_argument('--fw-sampling-rate', type=float, default=4.0, help='Sampling Rate to use during forward pass')
     parser.add_argument('--bw-sampling-rate', type=float, default=0.7, help='Sampling Rate to use during backward pass')
+    parser.add_argument('--lr', type=float, default=0.1, help='Learning rate for TF optimization')
 
 
     args = parser.parse_args()
@@ -391,14 +404,15 @@ if __name__ == '__main__':
     gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True, background_color=0xffffffff)
     # Data
     tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
-                                [0.1200, 0.1512, 0.6418, 0.8293, 0.0000],
-                                [0.1300, 0.1512, 0.6418, 0.8293, 0.5465],
-                                [0.1500, 0.1512, 0.6418, 0.8293, 0.7660],
-                                [0.1600, 0.1512, 0.6418, 0.8293, 0.0000],
+                                [0.1340, 0.5000, 0.5000, 0.5000, 0.0000],
+                                [0.1380, 0.5000, 0.5000, 0.5000, 0.7500],
+                                [0.1420, 0.5000, 0.5000, 0.5000, 0.7500],
+                                [0.1460, 0.5000, 0.5000, 0.5000, 0.0000],
                                 [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy()
     tf_gray = np.ones(tf.shape) * 0.5
+    tf_gray[:, 3] = 0.05
     tf_rand = np.random.random(tf.shape)
-    tf_randn= np.clip(tf + np.random.normal(0.0, 0.01, tf.shape), 0.0, 1.0)
+    tf_randn= np.clip(tf + np.random.normal(0.0, 0.1, tf.shape), 0.0, 1.0)
     # vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
     # vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
     # vol_randn = np.clip(vol + np.random.normal(0.0, 0.01, vol.shape), 0.0, 1.0)
@@ -412,16 +426,16 @@ if __name__ == '__main__':
         gui2 = ti.GUI("High sample rendering", res=RESOLUTION, fast_gui=True)
         # Setup Raycaster
         vr.set_volume(vol)
-        vr.set_tf_tex(tf*0.6)
+        vr.set_tf_tex(tf_randn)
         vr.set_reference(ti.imread('reference_skull.png') / 255.0)
         # Optimize for Transfer Function
-        lr = 1.0
+        lr = args.lr
         for i in range(args.iterations):
             # Optimization
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
-            vr.backward(args.bw_sampling_rate, True)
+            vr.backward(args.bw_sampling_rate, jitter=True) # computes grads
             vr.apply_grad(lr)
-            lr *= 0.99
+            lr *= 0.97 # decay
 
             # Log Backward Pass
             gui.set_image(vr.out_rgb)
@@ -429,14 +443,15 @@ if __name__ == '__main__':
             tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
             print(f'{i:05d} ========== Loss: ', vr.loss, ' ==========')
-            print('Max Samples:', vr.max_k, '   Learning Rate:', lr)
+            print('Max Samples:', vr.max_k, '/', vr.max_samples)
+            print('Learning Rate:', lr)
             print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
 
             ti.imwrite(vr.output, f'diff_test/color_step_{i:05d}.png')
             plot_tf(tf_pt).savefig(f'diff_test/tf_step_{i:05d}.png')
 
             # Standard forward pass for reference
-            vr.forward(args.fw_sampling_rate, False)
+            vr.forward(args.fw_sampling_rate, jitter=False)
             gui2.set_image(vr.out_rgb)
             gui2.show()
 
@@ -448,6 +463,7 @@ if __name__ == '__main__':
         while gui.running:
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
             vr.forward(args.fw_sampling_rate, False)
+            print('Max number of steps:', vr.max_k, '/', vr.max_samples)
 
             t += rotate_camera(gui)
             gui.set_image(vr.out_rgb)
@@ -455,7 +471,7 @@ if __name__ == '__main__':
             if args.ref:
                 ti.imwrite(vr.output, 'reference_skull.png')
                 plot_tf(vr.tf_tex.to_torch().permute(1,0).contiguous()).savefig('reference_tf_skull.png')
-                args.ref = False
+                break
 
     else:
         raise Exception(f'invalid task given: {args.task}')
