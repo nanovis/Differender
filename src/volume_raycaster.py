@@ -10,13 +10,14 @@ import matplotlib.pyplot as plt
 
 from torchvtk.utils import TFGenerator, tex_from_pts
 from torchvtk.datasets import TorchDataset
-from torchvtk.rendering import plot_tf
+from torchvtk.rendering import plot_tf, plot_tfs
 
 from utils import load_head_data
+from transfer_functions import get_tf
 
 def fig_to_img(fig):
     fig.set_tight_layout(True)
-    fig.set_dpi(150)
+    fig.set_dpi(100)
     fig.canvas.draw()
     w, h = fig.get_size_inches() * fig.get_dpi()
     w, h = int(w),int(h)
@@ -262,7 +263,7 @@ class VolumeRaycaster():
             self.n_samples[i, j] = n_samples
 
     @ti.kernel
-    def raycast(self):
+    def raycast(self, sampling_rate: float):
         ''' Produce a rendering. Run compute_entry_exit first! '''
         for i, j in self.samples: # For all pixels
             for cnt in range(self.n_samples[i,j]):
@@ -278,6 +279,7 @@ class VolumeRaycaster():
                     light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
+                    opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
                     # if sample_color.w > 1e-3:
                     normal = self.get_volume_normal(pos)
                     light_dir = (pos - light_pos).normalized() # Direction to light source
@@ -286,14 +288,14 @@ class VolumeRaycaster():
                     r = tl.reflect(light_dir, normal) # Direction of reflected light
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
-                    shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
+                    shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * opacity * self.light_color, opacity)
                     self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color + self.render[i, j, k-1]
                     self.samples[i, j] += 1
                 else:
                     self.render[i, j, k] = self.render[i, j, k-1]
 
     @ti.kernel
-    def raycast_nondiff(self):
+    def raycast_nondiff(self, sampling_rate: float):
         for i, j in self.samples: # For all pixels
             for cnt in range(self.n_samples[i,j]):
                 look_from = self.cam_pos[None]
@@ -307,6 +309,7 @@ class VolumeRaycaster():
                     light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
+                    opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
                     # if sample_color.w > 1e-3:
                     normal = self.get_volume_normal(pos)
                     light_dir = (pos - light_pos).normalized() # Direction to light source
@@ -315,7 +318,7 @@ class VolumeRaycaster():
                     r = tl.reflect(light_dir, normal) # Direction of reflected light
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
-                    shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * sample_color.w * self.light_color, sample_color.w)
+                    shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * opacity * self.light_color, opacity)
                     self.render[ i, j, 0] = (1.0 - self.render[i,j, 0].w) * shaded_color + self.render[i, j, 0]
                     self.samples[i, j] += 1
 
@@ -363,14 +366,14 @@ class VolumeRaycaster():
     def forward(self, sampling_rate=4.0, jitter=False):
         self.clear_framebuffer()
         self.compute_entry_exit(sampling_rate, jitter)
-        self.raycast_nondiff()
+        self.raycast_nondiff(sampling_rate)
         self.get_final_image_nondiff()
 
     def backward(self, sampling_rate=0.7, jitter=True):
         self.clear_framebuffer()
         self.compute_entry_exit(sampling_rate, jitter)
         with ti.Tape(self.loss):
-            self.raycast()
+            self.raycast(sampling_rate)
             self.get_final_image()
             self.compute_loss()
 
@@ -394,19 +397,21 @@ def rotate_camera(gui):
 if __name__ == '__main__':
     parser = ArgumentParser('Volume Raycaster')
     parser.add_argument('task', type=str, help='Either forward or backward')
-    parser.add_argument('--res', type=int, default=400, help='Render Resolution')
+    parser.add_argument('--res', type=int, default=240, help='Render Resolution')
     parser.add_argument('--tf-res', type=int, default=128, help='Transfer Function Texture Resolution')
-    parser.add_argument('--iterations', type=int, default=120, help='Number of iterations for TF optimization in backward')
+    parser.add_argument('--iterations', type=int, default=240, help='Number of iterations for TF optimization in backward')
     parser.add_argument('--debug', action='store_true', help='Turns on fancy logs')
     parser.add_argument('--ref', action='store_true', help='Create Reference Images')
-    parser.add_argument('--max-samples', type=int, default=768, help='Max number of samples to use in backward pass')
+    parser.add_argument('--max-samples', type=int, default=2048, help='Max number of samples to use in backward pass')
     parser.add_argument('--fw-sampling-rate', type=float, default=8.0, help='Sampling Rate to use during forward pass')
-    parser.add_argument('--bw-sampling-rate', type=float, default=0.7, help='Sampling Rate to use during backward pass')
+    parser.add_argument('--bw-sampling-rate', type=float, default=2.0, help='Sampling Rate to use during backward pass')
     parser.add_argument('--lr', type=float, default=0.1, help='Learning rate for TF optimization')
     parser.add_argument('--mom', type=float, default=0.9, help='Momentum for gradient descent')
     parser.add_argument('--clip-grads', type=float, default=0.1, help='Clips Gradient absolute to this value')
     parser.add_argument('--lr-decay', type=float, default=0.99, help='Learning rate is multiplied with this factor every iteration')
     parser.add_argument('--bw-jitter', action='store_true', help='Enable ray jitter when in backward mode')
+    parser.add_argument('--target-tf', type=str, default='tf2', help='Target Transfer Function, see transfer_function.py')
+    parser.add_argument('--init-tf', type=str, default='black', help='Initial Transfer function (when optimizing)')
 
 
     args = parser.parse_args()
@@ -417,23 +422,11 @@ if __name__ == '__main__':
         ti.init(arch=ti.cuda, debug=True, excepthook=True, log_level=ti.TRACE, kernel_profiler=True)
     else:
         ti.init(arch=ti.cuda)
-    gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True, background_color=0xffffffff)
     # Data
-    tf = tex_from_pts(np.array([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
-                                [0.1300, 0.5000, 0.5000, 0.5000, 0.0000],
-                                [0.1350, 0.5000, 0.5000, 0.5000, 0.7500],
-                                [0.1600, 0.5000, 0.5000, 0.5000, 0.7500],
-                                [0.1700, 0.5000, 0.5000, 0.5000, 0.0000],
-                                [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), TF_RESOLUTION).permute(1, 0).contiguous().numpy()
-    tfgen = TFGenerator()
-    tf = tex_from_pts(tfgen.generate(), TF_RESOLUTION).permute(1,0).contiguous().numpy()
-    tf_gray = np.ones(tf.shape) * 0.5
-    tf_gray[:, 3] = 0.02
-    tf_rand = np.random.random(tf.shape)
-    tf_randn= np.clip(tf + np.random.normal(0.0, 0.1, tf.shape), 0.0, 1.0)
+    tf = get_tf(args.target_tf, TF_RESOLUTION)
+    tf_init = get_tf(args.init_tf, TF_RESOLUTION)
     vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
     vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
-    # vol_randn = np.clip(vol + np.random.normal(0.0, 0.01, vol.shape), 0.0, 1.0)
     # vol = np.swapaxes(np.fromfile('data/skull.raw', dtype=np.uint8).reshape(256,256,256), 0, 1).astype(np.float32) / 255.0
 
     # Renderer
@@ -441,7 +434,9 @@ if __name__ == '__main__':
     t = np.pi * 1.5
 
     if args.task == 'backward':
-        gui2 = ti.GUI("High sample rendering", res=RESOLUTION, fast_gui=True)
+        gui_bw = ti.GUI("Volume Raycaster (Backward)", res=RESOLUTION, fast_gui=True)
+        gui_fw = ti.GUI("Volume Raycaster (Forward)", res=RESOLUTION, fast_gui=True)
+        gui_tf = ti.GUI("Transfer Function Comparison", res=(640,480))
         render_video = ti.VideoManager(output_dir='results/bw_render', framerate=24, automatic_build=False)
         render_video_fw = ti.VideoManager(output_dir='results/fw_render', framerate=24, automatic_build=False)
         tf_video = ti.VideoManager(output_dir='results/tf', framerate=24, automatic_build=False)
@@ -453,46 +448,51 @@ if __name__ == '__main__':
             vr.set_tf_tex(tf)
             vr.forward(args.fw_sampling_rate, jitter=False)
             plot_tf(vr.tf_tex.to_torch().permute(1,0).contiguous()).savefig('temp_tf_reference.png')
-            gui.set_image(vr.out_rgb)
-            gui.show()
-            gui2.set_image(vr.out_rgb)
-            gui2.show()
+            gui_fw.set_image(vr.out_rgb)
+            gui_fw.show()
+            gui_bw.set_image(vr.out_rgb)
+            gui_bw.show()
             ti.imwrite(vr.output, 'temp_reference.png')
             vr.set_reference(vr.output.to_numpy())
         else: # Use old reference
             vr.set_reference(ti.imread('temp_reference.png') / 255.0)
-        vr.set_tf_tex(tf_gray)
         # Optimize for Transfer Function
+        vr.set_tf_tex(tf_init) # initial tf
         lr = args.lr
         for i in range(args.iterations):
             # Optimization
             vr.backward(args.bw_sampling_rate, jitter=args.bw_jitter) # computes grads
-            vr.apply_grad(lr, args.mom, args.clip_grads)
+            vr.apply_grad(lr, args.mom, args.clip_grads) # Gradient descent with momentum
             lr *= args.lr_decay # decay
 
             # Log Backward Pass
-            gui.set_image(vr.out_rgb)
+            gui_bw.set_image(vr.out_rgb)
             render_video.write_frame(vr.out_rgb)
-            gui.show()
+            gui_bw.show()
             tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
-            print(f'{i:05d} ========== Loss: ', vr.loss, ' ==========')
+            print(f'\n[{i:05d} ========== Loss: ', vr.loss, ' ==========]')
             print('Max Samples:', vr.max_k, '/', vr.max_samples)
             print('Learning Rate:', lr)
             print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
+            # Log Transfer Function
+            tf_im = np.rot90(fig_to_img(plot_tfs([tf_pt, torch.from_numpy(tf).permute(1,0)], ['Prediction', 'Target'])), k=3)
+            gui_tf.set_image(tf_im)
+            gui_tf.show()
+            tf_video.write_frame(tf_im)
 
-            tf_video.write_frame(np.rot90(fig_to_img(plot_tf(tf_pt)), k=3))
-
-            # Standard forward pass for reference
+            # Standard forward pass for reference image
             vr.forward(args.fw_sampling_rate, jitter=False)
-            gui2.set_image(vr.out_rgb)
+            gui_fw.set_image(vr.out_rgb)
             render_video_fw.write_frame(vr.out_rgb)
-            gui2.show()
+            gui_fw.show()
+        # Make GIFs
         render_video.make_video(gif=True, mp4=False)
         render_video_fw.make_video(gif=True, mp4=False)
         tf_video.make_video(gif=True, mp4=False)
 
     elif args.task == 'forward':
+        gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True)
         # Setup Raycaster
         vr.set_volume(vol)
         vr.set_tf_tex(tf)
