@@ -5,6 +5,7 @@ import timeit
 from argparse import ArgumentParser
 
 import numpy as np
+import torch
 import matplotlib.pyplot as plt
 
 from torchvtk.utils import TFGenerator, tex_from_pts
@@ -335,6 +336,20 @@ class VolumeRaycaster():
             self.output[i, j] = tl.vec4(0.0)
             self.out_rgb[i,j] = tl.vec3(0.0)
 
+    def forward(self, sampling_rate=4.0, jitter=False):
+        self.clear_framebuffer()
+        self.compute_entry_exit(sampling_rate, jitter)
+        self.raycast_nondiff()
+        self.get_final_image()
+
+    def backward(self, sampling_rate=0.7, jitter=True):
+        self.clear_framebuffer()
+        self.compute_entry_exit(sampling_rate, jitter)
+        with ti.Tape(self.loss):
+            self.raycast()
+            self.get_final_image()
+            self.compute_loss()
+
 
 def in_circles(i, y=0.7, dist=2.5):
     x = np.cos(i) * dist
@@ -359,6 +374,11 @@ if __name__ == '__main__':
     parser.add_argument('--tf-res', type=int, default=128, help='Transfer Function Texture Resolution')
     parser.add_argument('--iterations', type=int, default=1000, help='Number of iterations for TF optimization in backward')
     parser.add_argument('--debug', action='store_true', help='Turns on fancy logs')
+    parser.add_argument('--ref', action='store_true', help='Create Reference Images')
+    parser.add_argument('--max-samples', type=int, default=512, help='Max number of samples to use in backward pass')
+    parser.add_argument('--fw-sampling-rate', type=float, default=4.0, help='Sampling Rate to use during forward pass')
+    parser.add_argument('--bw-sampling-rate', type=float, default=0.7, help='Sampling Rate to use during backward pass')
+
 
     args = parser.parse_args()
     RESOLUTION = (args.res, args.res)
@@ -383,10 +403,9 @@ if __name__ == '__main__':
     # vol = vol_ds[0]['vol'].squeeze().permute(2, 0, 1).contiguous().numpy()
     # vol_randn = np.clip(vol + np.random.normal(0.0, 0.01, vol.shape), 0.0, 1.0)
     vol = np.swapaxes(np.fromfile('data/skull.raw', dtype=np.uint8).reshape(256,256,256), 0, 1).astype(np.float32) / 255.0
-    print(vol.shape, vol.min(), vol.max())
 
     # Renderer
-    vr = VolumeRaycaster(volume_resolution=vol.shape, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
+    vr = VolumeRaycaster(volume_resolution=vol.shape, max_samples=args.max_samples, render_resolution=RESOLUTION, tf_resolution=TF_RESOLUTION)
     t = np.pi * 1.5
 
     if args.task == 'backward':
@@ -396,60 +415,47 @@ if __name__ == '__main__':
         vr.set_tf_tex(tf*0.6)
         vr.set_reference(ti.imread('reference_skull.png') / 255.0)
         # Optimize for Transfer Function
-        lr = 2.0
-        grads = []
+        lr = 1.0
         for i in range(args.iterations):
-            vr.clear_framebuffer()
+            # Optimization
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
-            vr.compute_entry_exit(0.7, True)
-            with ti.Tape(vr.loss):
-                vr.raycast()
-                vr.get_final_image()
-                vr.compute_loss()
+            vr.backward(args.bw_sampling_rate, True)
             vr.apply_grad(lr)
+            lr *= 0.99
+
+            # Log Backward Pass
             gui.set_image(vr.out_rgb)
             gui.show()
             tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
             print(f'{i:05d} ========== Loss: ', vr.loss, ' ==========')
-            print('Max Samples:', vr.max_k)
-            # print('Gradients:')
-            # render_grad_np = vr.render.grad.to_numpy()
-            # print(f'\t Loss: {np.abs(vr.loss.grad.to_numpy()).max()}\n',
-            #     f'\t Output: {np.abs(vr.output.grad.to_numpy()).max(axis=(0,1))}\n',
-            #     f'\t Render: {np.abs(render_grad_np).max(axis=(0,1,2))}\n',
-            #     f'\t Volume: {np.abs(vr.volume.grad.to_numpy()).max()}\n',
-            #     f'\t TF Tex: {np.abs(vr.tf_tex.grad.to_numpy()).max(axis=0)}')
-            grads.append(np.abs(tf_grad_np).max(axis=0))
+            print('Max Samples:', vr.max_k, '   Learning Rate:', lr)
+            print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
+
             ti.imwrite(vr.output, f'diff_test/color_step_{i:05d}.png')
             plot_tf(tf_pt).savefig(f'diff_test/tf_step_{i:05d}.png')
-            vr.clear_framebuffer()
-            vr.compute_entry_exit(4.0, False)
-            vr.raycast_nondiff()
-            vr.get_final_image()
+
+            # Standard forward pass for reference
+            vr.forward(args.fw_sampling_rate, False)
             gui2.set_image(vr.out_rgb)
             gui2.show()
-        plt.cla()
-        plt.clf()
-        plt.plot(np.stack(grads))
-        plt.savefig(f'diff_test/tf_grad.png')
 
     elif args.task == 'forward':
         # Setup Raycaster
         vr.set_volume(vol)
         vr.set_tf_tex(tf)
-        vr.clear_framebuffer()
         # Render volume
         while gui.running:
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
-            vr.clear_framebuffer()
-            vr.compute_entry_exit(4.0, False)
-            vr.raycast_nondiff()
-            vr.get_final_image()
+            vr.forward(args.fw_sampling_rate, False)
+
             t += rotate_camera(gui)
-            # print('Max Samples:', vr.max_k)
             gui.set_image(vr.out_rgb)
-            ti.imwrite(vr.output, 'reference_skull.png')
             gui.show()
+            if args.ref:
+                ti.imwrite(vr.output, 'reference_skull.png')
+                plot_tf(vr.tf_tex.to_torch().permute(1,0).contiguous()).savefig('reference_tf_skull.png')
+                args.ref = False
+
     else:
         raise Exception(f'invalid task given: {args.task}')
