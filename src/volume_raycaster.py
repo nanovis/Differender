@@ -101,17 +101,17 @@ class VolumeRaycaster():
         self.volume = ti.field(ti.f32, needs_grad=True)
         self.tf_tex    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.tf_momentum = ti.Vector.field(4, dtype=ti.f32)
-        self.render    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
-        self.output    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
+        self.render_tape    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
+        self.output_rgba    = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.reference = ti.Vector.field(4, dtype=ti.f32)
-        self.out_rgb   = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
-        self.samples   = ti.field(ti.i32)
-        self.n_samples = ti.field(ti.i32)
+        self.output_rgb   = ti.Vector.field(3, dtype=ti.f32)
+        self.valid_sample_step_count   = ti.field(ti.i32)
+        self.sample_step_nums = ti.field(ti.i32)
         self.entry = ti.field(ti.f32)
         self.exit  = ti.field(ti.f32)
         self.rays  = ti.Vector.field(3, dtype=ti.f32)
         self.loss = ti.field(ti.f32, (), needs_grad=True)
-        self.max_k = ti.field(ti.i32, ())
+        self.max_valid_sample_step_count = ti.field(ti.i32, ())
         self.max_samples = max_samples
         self.ambient = 0.4
         self.diffuse = 0.8
@@ -122,9 +122,9 @@ class VolumeRaycaster():
         volume_resolution = tuple(map(lambda d: d//4, volume_resolution))
         render_resolution = tuple(map(lambda d: d//16, render_resolution))
         ti.root.dense(ti.ijk, volume_resolution).dense(ti.ijk, (4,4,4)).place(self.volume)
-        ti.root.dense(ti.ijk, (*render_resolution, max_samples)).dense(ti.ijk, (16, 16, 1)).place(self.render)
-        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.samples, self.n_samples)
-        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.output, self.reference, self.out_rgb)
+        ti.root.dense(ti.ijk, (*render_resolution, max_samples)).dense(ti.ijk, (16, 16, 1)).place(self.render_tape)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.valid_sample_step_count, self.sample_step_nums)
+        ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.output_rgba, self.reference, self.output_rgb)
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.entry, self.exit)
         ti.root.dense(ti.ij,  render_resolution).dense(ti.ij, (16, 16)).place(self.rays)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
@@ -232,8 +232,8 @@ class VolumeRaycaster():
             jitter (int): Bool whether to apply jitter or not
         '''
         for i, j in self.entry: # For all pixels
-            max_x = ti.static(float(self.render.shape[0]))
-            max_y = ti.static(float(self.render.shape[1]))
+            max_x = ti.static(float(self.render_tape.shape[0]))
+            max_y = ti.static(float(self.render_tape.shape[1]))
             look_from = self.cam_pos[None]
             view_dir = (-look_from).normalized()
 
@@ -252,22 +252,21 @@ class VolumeRaycaster():
             self.entry[i, j] = tmin
             self.exit[i, j] = tmax
             self.rays[i, j] = vd
-            self.n_samples[i, j] = n_samples
+            self.sample_step_nums[i, j] = n_samples
 
     @ti.kernel
     def raycast(self, sampling_rate: float):
         ''' Produce a rendering. Run compute_entry_exit first! '''
-        for i, j in self.samples: # For all pixels
-            for cnt in range(self.n_samples[i,j]):
+        for i, j in self.valid_sample_step_count: # For all pixels
+            for sample_idx in range(self.sample_step_nums[i, j]):
                 look_from = self.cam_pos[None]
-                k = cnt
-                if self.render[i,j, k-1].w < 0.99 and k < ti.static(self.max_samples):
+                if self.render_tape[i, j, sample_idx - 1].w < 0.99 and sample_idx < ti.static(self.max_samples):
                     tmax = self.exit[i, j]
-                    n_samples = self.n_samples[i, j]
+                    n_samples = self.sample_step_nums[i, j]
                     ray_len = (tmax - self.entry[i, j])
                     tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
                     vd = self.rays[i, j]
-                    pos = look_from + tl.mix(tmin, tmax, float(cnt)/float(n_samples-1)) * vd # Current Pos
+                    pos = look_from + tl.mix(tmin, tmax, float(sample_idx)/float(n_samples-1)) * vd # Current Pos
                     light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
@@ -281,19 +280,19 @@ class VolumeRaycaster():
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
                     shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * opacity * self.light_color, opacity)
-                    self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color + self.render[i, j, k-1]
-                    self.samples[i, j] += 1
+                    self.render_tape[i, j, sample_idx] = (1.0 - self.render_tape[i, j, sample_idx - 1].w) * shaded_color + self.render_tape[i, j, sample_idx - 1]
+                    self.valid_sample_step_count[i, j] += 1
                 else:
-                    self.render[i, j, k] = self.render[i, j, k-1]
+                    self.render_tape[i, j, sample_idx] = self.render_tape[i, j, sample_idx - 1]
 
     @ti.kernel
     def raycast_nondiff(self, sampling_rate: float):
-        for i, j in self.samples: # For all pixels
-            for cnt in range(self.n_samples[i,j]):
+        for i, j in self.valid_sample_step_count: # For all pixels
+            for cnt in range(self.sample_step_nums[i, j]):
                 look_from = self.cam_pos[None]
-                if self.render[i,j, 0].w < 0.99:
+                if self.render_tape[i, j, 0].w < 0.99:
                     tmax = self.exit[i, j]
-                    n_samples = self.n_samples[i, j]
+                    n_samples = self.sample_step_nums[i, j]
                     ray_len = (tmax - self.entry[i, j])
                     tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
                     vd = self.rays[i, j]
@@ -311,13 +310,13 @@ class VolumeRaycaster():
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
                     shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * opacity * self.light_color, opacity)
-                    self.render[ i, j, 0] = (1.0 - self.render[i,j, 0].w) * shaded_color + self.render[i, j, 0]
-                    self.samples[i, j] += 1
+                    self.render_tape[i, j, 0] = (1.0 - self.render_tape[i, j, 0].w) * shaded_color + self.render_tape[i, j, 0]
+                    self.valid_sample_step_count[i, j] += 1
 
     @ti.kernel
     def compute_loss(self):
-        for i, j in self.output:
-            self.loss[None] += tl.summation((self.output[i,j] - self.reference[i,j])**2) / ti.static(3.0 * float(self.output.shape[0] * self.output.shape[1]))
+        for i, j in self.output_rgba:
+            self.loss[None] += tl.summation((self.output_rgba[i, j] - self.reference[i, j]) ** 2) / ti.static(3.0 * float(self.output_rgba.shape[0] * self.output_rgba.shape[1]))
 
     @ti.kernel
     def apply_grad(self, lr: float, gamma: float, max_grad: float):
@@ -328,32 +327,32 @@ class VolumeRaycaster():
 
     @ti.kernel
     def get_final_image(self):
-        for i,j in self.samples:
-            k = self.samples[i,j] -1
-            ns = self.n_samples[i,j]
-            self.output[i,j]  += self.render[i,j,ns-1]
-            self.out_rgb[i,j] += self.render[i,j,ns-1].xyz
-            if k > self.max_k[None]:
-                self.max_k[None] = k
+        for i,j in self.valid_sample_step_count:
+            valid_sample_step_count = self.valid_sample_step_count[i, j] - 1
+            ns = self.sample_step_nums[i, j]
+            self.output_rgba[i, j]  += self.render_tape[i, j, ns - 1]
+            self.output_rgb[i, j] += self.render_tape[i, j, ns - 1].xyz
+            if valid_sample_step_count > self.max_valid_sample_step_count[None]:
+                self.max_valid_sample_step_count[None] = valid_sample_step_count
 
     @ti.kernel
     def get_final_image_nondiff(self):
-        for i,j in self.samples:
-            k = self.samples[i,j] -1
-            self.output[i,j] = self.render[i,j,0]
-            self.out_rgb[i,j] = self.render[i,j,0].xyz
-            if k > self.max_k[None]:
-                self.max_k[None] = k
+        for i,j in self.valid_sample_step_count:
+            valid_sample_step_count = self.valid_sample_step_count[i, j] - 1
+            self.output_rgba[i, j] = self.render_tape[i, j, 0]
+            self.output_rgb[i, j] = self.render_tape[i, j, 0].xyz
+            if valid_sample_step_count > self.max_valid_sample_step_count[None]:
+                self.max_valid_sample_step_count[None] = valid_sample_step_count
 
     @ti.kernel
     def clear_framebuffer(self):
-        self.max_k[None] = 0
-        for i,j,k in self.render:
-            self.render[i, j, k] = tl.vec4(0.0)
-        for i,j in self.samples:
-            self.samples[i, j] = 1
-            self.output[i, j] = tl.vec4(0.0)
-            self.out_rgb[i,j] = tl.vec3(0.0)
+        self.max_valid_sample_step_count[None] = 0
+        for i,j,k in self.render_tape:
+            self.render_tape[i, j, k] = tl.vec4(0.0)
+        for i,j in self.valid_sample_step_count:
+            self.valid_sample_step_count[i, j] = 1
+            self.output_rgba[i, j] = tl.vec4(0.0)
+            self.output_rgb[i, j] = tl.vec3(0.0)
 
     def forward(self, sampling_rate=4.0, jitter=False):
         self.clear_framebuffer()
@@ -440,12 +439,12 @@ if __name__ == '__main__':
             vr.set_tf_tex(tf)
             vr.forward(args.fw_sampling_rate, jitter=False)
             plot_tf(vr.tf_tex.to_torch().permute(1,0).contiguous()).savefig('temp_tf_reference.png')
-            gui_fw.set_image(vr.out_rgb)
+            gui_fw.set_image(vr.output_rgb)
             gui_fw.show()
-            gui_bw.set_image(vr.out_rgb)
+            gui_bw.set_image(vr.output_rgb)
             gui_bw.show()
-            ti.imwrite(vr.output, 'temp_reference.png')
-            vr.set_reference(vr.output.to_numpy())
+            ti.imwrite(vr.output_rgba, 'temp_reference.png')
+            vr.set_reference(vr.output_rgba.to_numpy())
         else: # Use old reference
             vr.set_reference(ti.imread('temp_reference.png') / 255.0)
         # Optimize for Transfer Function
@@ -458,13 +457,13 @@ if __name__ == '__main__':
             lr *= args.lr_decay # decay
 
             # Log Backward Pass
-            gui_bw.set_image(vr.out_rgb)
-            render_video.write_frame(vr.out_rgb)
+            gui_bw.set_image(vr.output_rgb)
+            render_video.write_frame(vr.output_rgb)
             gui_bw.show()
             tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
             print(f'\n[{i:05d} ========== Loss: ', vr.loss, ' ==========]')
-            print('Max Samples:', vr.max_k, '/', vr.max_samples)
+            print('Max Samples:', vr.max_valid_sample_step_count, '/', vr.max_samples)
             print('Learning Rate:', lr)
             print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
             # Log Transfer Function
@@ -475,8 +474,8 @@ if __name__ == '__main__':
 
             # Standard forward pass for reference image
             vr.forward(args.fw_sampling_rate, jitter=False)
-            gui_fw.set_image(vr.out_rgb)
-            render_video_fw.write_frame(vr.out_rgb)
+            gui_fw.set_image(vr.output_rgb)
+            render_video_fw.write_frame(vr.output_rgb)
             gui_fw.show()
         # Make GIFs
         render_video.make_video(gif=True, mp4=False)
@@ -492,13 +491,13 @@ if __name__ == '__main__':
         while gui.running:
             vr.cam_pos[None] = tl.vec3(*in_circles(t))
             vr.forward(args.fw_sampling_rate, False)
-            print('Max number of steps:', vr.max_k, '/', vr.max_samples)
+            print('Max number of steps:', vr.max_valid_sample_step_count, '/', vr.max_samples)
 
             t += rotate_camera(gui)
-            gui.set_image(vr.out_rgb)
+            gui.set_image(vr.output_rgb)
             gui.show()
             if args.ref:
-                ti.imwrite(vr.output, 'reference_skull.png')
+                ti.imwrite(vr.output_rgba, 'reference_skull.png')
                 plot_tf(vr.tf_tex.to_torch().permute(1,0).contiguous()).savefig('reference_tf_skull.png')
                 break
 
