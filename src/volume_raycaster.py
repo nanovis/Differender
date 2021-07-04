@@ -410,9 +410,9 @@ if __name__ == '__main__':
     RESOLUTION_T = tuple(map(lambda d: d//16, RESOLUTION))
     TF_RESOLUTION = args.tf_res
     if args.debug:
-        ti.init(arch=ti.cuda, debug=True, excepthook=True, log_level=ti.TRACE, kernel_profiler=True)
+        ti.init(arch=ti.cuda, debug=True, excepthook=True, log_level=ti.TRACE, kernel_profiler=True, default_fp=ti.f32)
     else:
-        ti.init(arch=ti.cuda)
+        ti.init(arch=ti.cuda, default_fp=ti.f32)
     # Data
     tf = get_tf(args.target_tf, TF_RESOLUTION)
     tf_init = get_tf(args.init_tf, TF_RESOLUTION)
