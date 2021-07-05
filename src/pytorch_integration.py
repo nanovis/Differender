@@ -26,16 +26,34 @@ def calc_loss():
         loss[None] += output_field[i] ** 2
 
 
+@ti.kernel
+def clear_grads():
+    loss.grad[None] = 0.0
+    for i in output_field:
+        output_field.grad[i] = 0.0
+        weight_field.grad[i] = 0.0
+
+
 print(f"data = {data_tensor}")
+print(f"weights = {weight_tensor}")
 multiply()
 calc_loss()
 loss.grad[None] = 1.0
 calc_loss.grad()
 multiply.grad()
-print(weight_field.grad)
+print(f"weight field grad calc by kernel.grad: {weight_field.grad}")
 
 with ti.Tape(loss):
     multiply()
     calc_loss()
 
-print(weight_field.grad)
+print(f"weight field grad calc by ti.Tape: {weight_field.grad}")
+
+clear_grads()
+cuda = torch.device("cuda")
+output_tensor = output_field.to_torch(device=cuda).requires_grad_(True)
+torch_loss = (output_tensor ** 2).sum()
+torch_loss.backward()
+output_field.grad.from_torch(output_tensor.grad)
+multiply.grad()
+print(f"weight field grads calc by hybrid pipeline: {weight_field.grad}")
