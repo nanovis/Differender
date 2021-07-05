@@ -29,6 +29,7 @@ def calc_loss():
 print(f"data = {data_tensor}")
 multiply()
 calc_loss()
+loss.grad[None] = 1.0
 calc_loss.grad()
 multiply.grad()
 print(weight_field.grad)
