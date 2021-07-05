@@ -114,6 +114,7 @@ class VolumeRaycaster():
         self.shininess = 32.0
         self.light_color = tl.vec3(1.0)
         self.cam_pos = ti.Vector.field(3, dtype=ti.f32)
+        self.cuda = torch.device("cuda")
         volume_resolution = tuple(map(lambda d: d//4, volume_resolution))
         render_resolution = tuple(map(lambda d: d//16, render_resolution))
         ti.root.dense(ti.ijk, volume_resolution).dense(ti.ijk, (4,4,4)).place(self.volume)
@@ -372,9 +373,17 @@ class VolumeRaycaster():
         # forward pass and backward pass
         self.raycast(sampling_rate)
         self.get_final_image()
-        self.compute_loss()
-        self.loss.grad[None] = 1.0
-        self.compute_loss.grad()
+
+        # self.compute_loss()
+        # self.loss.grad[None] = 1.0
+        # self.compute_loss.grad()
+        reference_tensor = self.reference.to_torch(device=self.cuda)
+        output_rgba_tensor = self.output_rgba.to_torch(device=self.cuda).requires_grad_(True)
+        loss = torch.nn.functional.mse_loss(output_rgba_tensor, reference_tensor)
+        loss.backward()
+        self.loss.from_torch(loss)
+        self.output_rgba.grad.from_torch(output_rgba_tensor.grad)
+
         self.get_final_image.grad()
         self.raycast.grad(sampling_rate)
 
