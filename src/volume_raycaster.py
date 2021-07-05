@@ -1,18 +1,13 @@
 import taichi as ti
 import taichi_glsl as tl
-
-import timeit
 from argparse import ArgumentParser
 
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
-from torchvtk.utils import TFGenerator, tex_from_pts
-from torchvtk.datasets import TorchDataset
 from torchvtk.rendering import plot_tf, plot_tfs
 
-from utils import load_head_data
 from transfer_functions import get_tf
 
 def fig_to_img(fig):
@@ -360,13 +355,28 @@ class VolumeRaycaster():
         self.raycast_nondiff(sampling_rate)
         self.get_final_image_nondiff()
 
+    def clear_grad(self):
+        self.volume.grad.fill(0.0)
+        self.tf_tex.grad.fill(0.0)
+        self.render_tape.grad.fill(0.0)
+        self.output_rgba.grad.fill(0.0)
+
+
     def backward(self, sampling_rate=0.7, jitter=True):
+        # cleaning
         self.clear_framebuffer()
+        self.clear_grad()
+        self.loss[None] = 0.0
+        # preparations
         self.compute_entry_exit(sampling_rate, jitter)
-        with ti.Tape(self.loss):
-            self.raycast(sampling_rate)
-            self.get_final_image()
-            self.compute_loss()
+        # forward pass and backward pass
+        self.raycast(sampling_rate)
+        self.get_final_image()
+        self.compute_loss()
+        self.loss.grad[None] = 1.0
+        self.compute_loss.grad()
+        self.get_final_image.grad()
+        self.raycast.grad(sampling_rate)
 
 
 def in_circles(i, y=0.7, dist=2.5):
