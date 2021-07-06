@@ -23,7 +23,7 @@ def multiply():
 @ti.kernel
 def calc_loss():
     for i in output_field:
-        loss[None] += output_field[i] ** 2
+        loss[None] += output_field[i]**2
 
 
 @ti.kernel
@@ -52,7 +52,7 @@ print(f"weight field grad calc by ti.Tape: {weight_field.grad}")
 clear_grads()
 cuda = torch.device("cuda")
 output_tensor = output_field.to_torch(device=cuda).requires_grad_(True)
-torch_loss = (output_tensor ** 2).sum()
+torch_loss = (output_tensor**2).sum()
 torch_loss.backward()
 output_field.grad.from_torch(output_tensor.grad)
 multiply.grad()
