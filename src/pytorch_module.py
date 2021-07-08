@@ -344,14 +344,14 @@ class RaycastFunction(torch.autograd.Function):
         ctx.vr = vr # Save Volume Raycaster for backward
         ctx.sampling_rate = sampling_rate
         vr.cam_pos[None] = tl.vec3(*look_from.tolist())
-        vr.set_volume(volume.squeeze(0).permute(2, 0, 1).contiguous())
-        vr.set_tf_tex(tf.permute(1,0).contiguous())
+        vr.set_volume(volume)
+        vr.set_tf_tex(tf)
         vr.clear_framebuffer()
         vr.compute_entry_exit(sampling_rate, jitter)
         vr.raycast(sampling_rate)
         vr.get_final_image()
 
-        return torch.flip(vr.output_rgba.to_torch(device=volume.device), (1,)).permute(2, 1, 0).contiguous()
+        return vr.output_rgba.to_torch(device=volume.device)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -359,7 +359,8 @@ class RaycastFunction(torch.autograd.Function):
         ctx.vr.get_final_image.grad()
         ctx.vr.raycast.grad(ctx.sampling_rate)
 
-        return ctx.vr.volume.grad.to_torch(device=grad_output.device), \
+        return None, \
+               ctx.vr.volume.grad.to_torch(device=grad_output.device).unsqueeze(0), \
                ctx.vr.tf_tex.grad.to_torch(device=grad_output.device), \
                None, None, None
 
@@ -375,9 +376,13 @@ class Raycaster(torch.nn.Module):
             max_samples=max_samples, tf_resolution=tf_shape, fov=fov, nearfar=(near, far))
 
     def forward(self, volume, tf, look_from):
-        # TODO: assert volume shape
-        # TODO: assert tf shape
-        return RaycastFunction.apply(self.vr, volume, tf, look_from, self.sampling_rate, self.jitter)
+        assert volume.ndim == 4 and tf.ndim == 2 and look_from.shape == (3,)
+        vol = volume.squeeze(0).permute(2, 0, 1).contiguous()
+        tf_ = tf.permute(1, 0).contiguous()
+        return torch.flip(
+            RaycastFunction.apply(self.vr, vol, tf_, look_from,
+                                  self.sampling_rate, self.jitter),
+            (1, )).permute(2, 1, 0).contiguous()
 
     def extra_repr(self):
         return f'{self.volume_shape=}, {self.output_shape=}, {self.tf_shape=}, {self.vr.max_samples=}'
