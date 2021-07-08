@@ -19,8 +19,13 @@ print(f'{tf.shape=}, {tf.min()=}, {tf.max()=}')
 
 if __name__ == '__main__':
     target = torch.load('target.pt')
-    res = r.forward(vol.requires_grad_(True), tf.requires_grad_(True), look_from.requires_grad_(True))
-    loss = torch.nn.functional.mse_loss(res, target)
-    print(f'{loss=}')
-    loss.backward()
-    print(tf.grad)
+    opt = torch.optim.Adam([tf])
+    for i in range(100):
+        opt.zero_grad()
+        res = r.forward(vol.requires_grad_(True), tf.requires_grad_(True), look_from.requires_grad_(True))
+        loss = torch.nn.functional.mse_loss(res, target)
+        loss.backward()
+        print(f'{loss=}, {tf.grad.abs().max()=}')
+        # opt.step()
+        with torch.no_grad():
+            tf = torch.clamp(tf, 0.0, 1.0)
