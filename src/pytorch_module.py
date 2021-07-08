@@ -343,18 +343,19 @@ class RaycastFunction(torch.autograd.Function):
         # ctx.save_for_backward(volume, tf, look_from)
         ctx.vr = vr # Save Volume Raycaster for backward
         ctx.sampling_rate = sampling_rate
-        vr.cam_pos[None] = tl.vec3(look_from.tolist())
+        vr.cam_pos[None] = tl.vec3(*look_from.tolist())
         vr.set_volume(volume.squeeze(0).permute(2, 0, 1).contiguous())
         vr.set_tf_tex(tf.permute(1,0).contiguous())
         vr.clear_framebuffer()
         vr.compute_entry_exit(sampling_rate, jitter)
         vr.raycast(sampling_rate)
         vr.get_final_image()
-        return vr.output_rgba.to_torch(device=volume.device).permute(2, 1, 0).contiguous()
+
+        return torch.flip(vr.output_rgba.to_torch(device=volume.device), (1,)).permute(2, 1, 0).contiguous()
 
     @staticmethod
     def backward(ctx, grad_output):
-        ctx.vr.output_rga.grad.from_torch(grad_output)
+        ctx.vr.output_rgba.grad.from_torch(grad_output)
         ctx.vr.get_final_image.grad()
         ctx.vr.raycast.grad(ctx.sampling_rate)
 
