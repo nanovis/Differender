@@ -3,6 +3,8 @@ import taichi as ti
 import taichi_glsl as tl
 import numpy as np
 
+ti.init(arch=ti.cuda, default_fp=ti.f32)
+
 
 @ti.func
 def low_high_frac(x: float):
@@ -322,6 +324,12 @@ class VolumeRaycaster():
             self.valid_sample_step_count[i, j] = 1
             self.output_rgba[i, j] = tl.vec4(0.0)
 
+    def clear_grad(self):
+        self.volume.grad.fill(0.0)
+        self.tf_tex.grad.fill(0.0)
+        self.render_tape.grad.fill(0.0)
+        self.output_rgba.grad.fill(0.0)
+
 
 class RaycastFunction(torch.autograd.Function):
     @staticmethod
@@ -355,6 +363,7 @@ class RaycastFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        ctx.vr.clear_grad()
         ctx.vr.output_rgba.grad.from_torch(grad_output)
         ctx.vr.get_final_image.grad()
         ctx.vr.raycast.grad(ctx.sampling_rate)
