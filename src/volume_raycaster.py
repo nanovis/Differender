@@ -591,6 +591,7 @@ if __name__ == '__main__':
         # Optimize for Transfer Function
         vr.set_tf_tex(tf_init)  # initial tf
         lr = args.lr
+        voxel_num = vr.volume.shape[0] * vr.volume.shape[1] * vr.volume.shape[2]
         for i in range(args.iterations):
             # Optimization
             vr.backward(args.bw_sampling_rate,
@@ -605,11 +606,13 @@ if __name__ == '__main__':
             gui_bw.show()
             tf_pt = vr.tf_tex.to_torch().permute(1, 0).contiguous()
             tf_grad_np = vr.tf_tex.grad.to_numpy()
+            vol_grad_np = vr.volume.grad.to_numpy()
             print(f'\n[{i:05d} ========== Loss: ', vr.loss, ' ==========]')
             print('Max Samples:', vr.max_valid_sample_step_count, '/',
                   vr.max_samples)
             print('Learning Rate:', lr)
             print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
+            print(f'Volume Gradients NaN rate: {len(np.where(np.isnan(np.abs(vol_grad_np)))[0]) / voxel_num}')
             # Log Transfer Function
             tf_im = np.rot90(fig_to_img(
                 plot_tfs([tf_pt, torch.from_numpy(tf).permute(1, 0)],
