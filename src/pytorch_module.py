@@ -123,6 +123,9 @@ class VolumeRaycaster():
     def set_tf_tex(self, tf_tex):
         self.tf_tex.from_torch(tf_tex.float())
 
+    def set_cam_pos(self, cam_pos):
+        self.cam_pos.from_torch(cam_pos.float())
+
     @ti.func
     def get_ray_direction(self, orig, view_dir, x: float, y: float):
         ''' Compute ray direction for perspecive camera.
@@ -339,7 +342,7 @@ class RaycastFunction(torch.autograd.Function):
         Args:
             ctx (obj): Context used for torch.autograd.Function
             vr (VolumeRaycaster): VolumeRaycaster taichi class
-            volume (Tensor): PyTorch Tensor representing the volume of shape (1, D, H, W)
+            volume (Tensor): PyTorch Tensor representing the volume of shape ([BS,] D, H, W)
             tf (Tensor): PyTorch Tensor representing a transfer fucntion texture of shape (C, W)
             look_from (Tensor): Look From for Raycaster camera. Shape (3,)
             sampling_rate (float): Sampling rate as multiplier to the Nyquist frequency
@@ -348,30 +351,70 @@ class RaycastFunction(torch.autograd.Function):
         Returns:
             Tensor: Resulting rendered image of shape (C, H, W)
         '''
-        # ctx.save_for_backward(volume, tf, look_from)
         ctx.vr = vr # Save Volume Raycaster for backward
         ctx.sampling_rate = sampling_rate
-        vr.cam_pos[None] = tl.vec3(*look_from.tolist())
-        vr.set_volume(volume)
-        vr.set_tf_tex(tf)
-        vr.clear_framebuffer()
-        vr.compute_entry_exit(sampling_rate, jitter)
-        vr.raycast(sampling_rate)
-        vr.get_final_image()
-
-        return vr.output_rgba.to_torch(device=volume.device)
+        ctx.jitter = jitter
+        # vr.cam_pos[None] = tl.vec3(*look_from.tolist())
+        if volume.ndim == 4: # Batched Input
+            ctx.batched = True
+            ctx.save_for_backward(volume, tf, look_from) # No saving needed for single example, as it's saved inside vr
+            bs = volume.size(0)
+            result = torch.zeros(bs, *vr.resolution, 4, dtype=torch.float32, device=volume.device)
+            for i, vol, tf_, lf in zip(range(bs), volume, tf, look_from):
+                vr.set_cam_pos(lf)
+                vr.set_volume(vol) 
+                vr.set_tf_tex(tf_)
+                vr.clear_framebuffer()
+                vr.compute_entry_exit(sampling_rate, jitter)
+                vr.raycast(sampling_rate)
+                vr.get_final_image()
+                result[i] = vr.output_rgba.to_torch(device=volume.device)
+            return result
+        else:
+            ctx.batched = False
+            vr.set_cam_pos(look_from)
+            vr.set_volume(volume)
+            vr.set_tf_tex(tf)
+            vr.clear_framebuffer()
+            vr.compute_entry_exit(sampling_rate, jitter)
+            vr.raycast(sampling_rate)
+            vr.get_final_image()
+            return vr.output_rgba.to_torch(device=volume.device)
 
     @staticmethod
     def backward(ctx, grad_output):
-        ctx.vr.clear_grad()
-        ctx.vr.output_rgba.grad.from_torch(grad_output)
-        ctx.vr.get_final_image.grad()
-        ctx.vr.raycast.grad(ctx.sampling_rate)
+        dev = grad_output.device
+        if ctx.batched: # Batched Gradient
+            vols, tfs, lfs = ctx.saved_tensors
+            bs = grad_output.size(0)
+            volume_grad = torch.zeros(bs, *ctx.vr.volume.shape, dtype=torch.float32, device=dev)
+            tf_grad = torch.zeros(bs, *ctx.vr.tf_tex.shape, ctx.vr.tf_tex.n, dtype=torch.float32, device=dev)
+            for i, vol, tf, lf in zip(range(bs), vols, tfs, lfs):
+                ctx.vr.clear_grad()
+                ctx.vr.set_volume(vol)
+                ctx.vr.set_tf_tex(tf)
+                ctx.vr.clear_framebuffer()
+                ctx.vr.compute_entry_exit(ctx.sampling_rate, ctx.jitter)
+                ctx.vr.raycast(ctx.sampling_rate)
+                ctx.vr.get_final_image()
+                ctx.vr.output_rgba.grad.from_torch(grad_output[i])
+                ctx.vr.get_final_image.grad()
+                ctx.vr.raycast.grad(ctx.sampling_rate)
 
-        return None, \
-               torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=grad_output.device)).unsqueeze(0), \
-               torch.nan_to_num(ctx.vr.tf_tex.grad.to_torch(device=grad_output.device)), \
-               None, None, None
+                volume_grad[i] = torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=dev))
+                tf_grad[i] = torch.nan_to_num(ctx.vr.tf_tex.grad.to_torch(device=dev))
+            return None, volume_grad, tf_grad, None, None, None
+
+        else:
+            ctx.vr.clear_grad()
+            ctx.vr.output_rgba.grad.from_torch(grad_output)
+            ctx.vr.get_final_image.grad()
+            ctx.vr.raycast.grad(ctx.sampling_rate)
+
+            return None, \
+                torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=dev)), \
+                torch.nan_to_num(ctx.vr.tf_tex.grad.to_torch(device=dev)), \
+                None, None, None
 
 class Raycaster(torch.nn.Module):
     def __init__(self, volume_shape, output_shape, tf_shape, sampling_rate=1.0, jitter=True, max_samples=512, fov=30.0, near=0.1, far=100.0):
@@ -385,13 +428,21 @@ class Raycaster(torch.nn.Module):
             max_samples=max_samples, tf_resolution=tf_shape, fov=fov, nearfar=(near, far))
 
     def forward(self, volume, tf, look_from):
-        assert volume.ndim == 4 and tf.ndim == 2 and look_from.shape == (3,)
-        vol = volume.squeeze(0).permute(2, 0, 1).contiguous()
-        tf_ = tf.permute(1, 0).contiguous()
-        return torch.flip(
-            RaycastFunction.apply(self.vr, vol, tf_, look_from,
-                                  self.sampling_rate, self.jitter),
-            (1, )).permute(2, 1, 0).contiguous()
+        if volume.ndim == 5: # Batched
+            assert tf.ndim == 3 and look_from.ndim == 2
+            vol = volume.squeeze(1).permute(0, 3, 1, 2).contiguous()
+            tf_ = tf.permute(0, 2, 1).contiguous()
+            return torch.flip(
+                RaycastFunction.apply(self.vr, vol, tf_, look_from, self.sampling_rate, self.jitter),
+                    (2, )).permute(0, 3, 2, 1).contiguous()
+        else:
+            assert volume.ndim == 4 and tf.ndim == 2 and look_from.shape == (3,)
+            vol = volume.squeeze(0).permute(2, 0, 1).contiguous()
+            tf_ = tf.permute(1, 0).contiguous()
+            return torch.flip(
+                RaycastFunction.apply(self.vr, vol, tf_, look_from,
+                                    self.sampling_rate, self.jitter),
+                (1, )).permute(2, 1, 0).contiguous()
 
     def extra_repr(self):
         return f'{self.volume_shape=}, {self.output_shape=}, {self.tf_shape=}, {self.vr.max_samples=}'
