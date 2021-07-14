@@ -8,7 +8,7 @@ from pytorch_module import Raycaster
 
 from torchvision.utils import save_image
 
-tf = torch.from_numpy(get_tf('gray', 128)).permute(1,0).float().contiguous()
+tf = torch.from_numpy(get_tf('tf1', 128)).permute(1,0).float().contiguous()
 vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_128')
 vol = vol_ds[0]['vol'].float()
 look_from = torch.tensor([0.0, 1.0, -2.5])
@@ -21,6 +21,7 @@ print(f'{tf.shape=}, {tf.min()=}, {tf.max()=}')
 
 
 if __name__ == '__main__':
+    vol += torch.randn_like(vol) * 0.1
     vol = vol.to('cuda').float().requires_grad_(True)
     tf = tf.to('cuda').float().requires_grad_(False)
     look_from = look_from.to('cuda').float().requires_grad_(False)
