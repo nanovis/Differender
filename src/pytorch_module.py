@@ -369,8 +369,8 @@ class RaycastFunction(torch.autograd.Function):
         ctx.vr.raycast.grad(ctx.sampling_rate)
 
         return None, \
-               ctx.vr.volume.grad.to_torch(device=grad_output.device).unsqueeze(0), \
-               ctx.vr.tf_tex.grad.to_torch(device=grad_output.device), \
+               torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=grad_output.device)).unsqueeze(0), \
+               torch.nan_to_num(ctx.vr.tf_tex.grad.to_torch(device=grad_output.device)), \
                None, None, None
 
 class Raycaster(torch.nn.Module):
