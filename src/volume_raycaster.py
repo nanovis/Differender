@@ -209,9 +209,9 @@ class VolumeRaycaster():
     @ti.func
     def get_volume_normal(self, pos):
         delta = 1e-3
-        x_delta = tl.vec3(delta, 0.0, 0.0)
-        y_delta = tl.vec3(0.0, delta, 0.0)
-        z_delta = tl.vec3(0.0, 0.0, delta)
+        x_delta = ti.static(tl.vec3(delta, 0.0, 0.0))
+        y_delta = ti.static(tl.vec3(0.0, delta, 0.0))
+        z_delta = ti.static(tl.vec3(0.0, 0.0, delta))
         dx = self.sample_volume_trilinear(pos + x_delta) - self.sample_volume_trilinear(pos - x_delta)
         dy = self.sample_volume_trilinear(pos + y_delta) - self.sample_volume_trilinear(pos - y_delta)
         dz = self.sample_volume_trilinear(pos + z_delta) - self.sample_volume_trilinear(pos - z_delta)
@@ -283,12 +283,12 @@ class VolumeRaycaster():
                     # if sample_color.w > 1e-3:
                     normal = self.get_volume_normal(pos)
                     light_dir = (pos - light_pos).normalized() # Direction to light source
-                    n_dot_l = max(normal.dot(light_dir), 0.0)
+                    n_dot_l = ti.max(normal.dot(light_dir), 0.0)
                     diffuse = self.diffuse * n_dot_l
                     r = tl.reflect(light_dir, normal) # Direction of reflected light
-                    r_dot_v = max(r.dot(-vd), 0.0)
-                    specular = self.specular * pow(r_dot_v, self.shininess)
-                    shaded_color = tl.vec4((diffuse + specular + self.ambient) * sample_color.xyz * opacity * self.light_color, opacity)
+                    r_dot_v = ti.max(r.dot(-vd), 0.0)
+                    specular = self.specular * ti.pow(r_dot_v, self.shininess)
+                    shaded_color = tl.vec4((self.ambient + diffuse + specular) * sample_color.xyz * opacity * self.light_color, opacity)
                     self.render[ i, j, k] = (1.0 - self.render[i,j, k-1].w) * shaded_color + self.render[i, j, k-1]
                     self.samples[i, j] += 1
                 else:
@@ -412,6 +412,9 @@ if __name__ == '__main__':
     parser.add_argument('--bw-jitter', action='store_true', help='Enable ray jitter when in backward mode')
     parser.add_argument('--target-tf', type=str, default='tf5', help='Target Transfer Function, see transfer_function.py')
     parser.add_argument('--init-tf', type=str, default='black', help='Initial Transfer function (when optimizing)')
+    parser.add_argument('--gui', action='store_true', help='Show GUI')
+    parser.add_argument('--log-grads', action='store_true', help='Log Gradient Info')
+    parser.add_argument('--gif', action='store_true', help='Create GIF')
 
 
     args = parser.parse_args()
@@ -434,12 +437,14 @@ if __name__ == '__main__':
     t = np.pi * 1.5
 
     if args.task == 'backward':
-        gui_bw = ti.GUI("Volume Raycaster (Backward)", res=RESOLUTION, fast_gui=True)
-        gui_fw = ti.GUI("Volume Raycaster (Forward)", res=RESOLUTION, fast_gui=True)
-        gui_tf = ti.GUI("Transfer Function Comparison", res=(640,480))
-        render_video = ti.VideoManager(output_dir='results/bw_render', framerate=24, automatic_build=False)
-        render_video_fw = ti.VideoManager(output_dir='results/fw_render', framerate=24, automatic_build=False)
-        tf_video = ti.VideoManager(output_dir='results/tf', framerate=24, automatic_build=False)
+        if args.gui:
+            gui_bw = ti.GUI("Volume Raycaster (Backward)", res=RESOLUTION, fast_gui=True)
+            gui_fw = ti.GUI("Volume Raycaster (Forward)", res=RESOLUTION, fast_gui=True)
+            gui_tf = ti.GUI("Transfer Function Comparison", res=(640,480))
+        if args.gif:
+            render_video = ti.VideoManager(output_dir='results/bw_render', framerate=24, automatic_build=False)
+            render_video_fw = ti.VideoManager(output_dir='results/fw_render', framerate=24, automatic_build=False)
+            tf_video = ti.VideoManager(output_dir='results/tf', framerate=24, automatic_build=False)
         # Setup Raycaster
         vr.set_volume(vol)
         vr.cam_pos[None] = tl.vec3(*in_circles(t))
@@ -448,10 +453,11 @@ if __name__ == '__main__':
             vr.set_tf_tex(tf)
             vr.forward(args.fw_sampling_rate, jitter=False)
             plot_tf(vr.tf_tex.to_torch().permute(1,0).contiguous()).savefig('temp_tf_reference.png')
-            gui_fw.set_image(vr.out_rgb)
-            gui_fw.show()
-            gui_bw.set_image(vr.out_rgb)
-            gui_bw.show()
+            if args.gui:
+                gui_fw.set_image(vr.out_rgb)
+                gui_fw.show()
+                gui_bw.set_image(vr.out_rgb)
+                gui_bw.show()
             ti.imwrite(vr.output, 'temp_reference.png')
             vr.set_reference(vr.output.to_numpy())
         else: # Use old reference
@@ -466,30 +472,49 @@ if __name__ == '__main__':
             lr *= args.lr_decay # decay
 
             # Log Backward Pass
-            gui_bw.set_image(vr.out_rgb)
-            render_video.write_frame(vr.out_rgb)
-            gui_bw.show()
-            tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
-            tf_grad_np = vr.tf_tex.grad.to_numpy()
-            print(f'\n[{i:05d} ========== Loss: ', vr.loss, ' ==========]')
-            print('Max Samples:', vr.max_k, '/', vr.max_samples)
-            print('Learning Rate:', lr)
-            print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
-            # Log Transfer Function
-            tf_im = np.rot90(fig_to_img(plot_tfs([tf_pt, torch.from_numpy(tf).permute(1,0)], ['Prediction', 'Target'])), k=3)
-            gui_tf.set_image(tf_im)
-            gui_tf.show()
-            tf_video.write_frame(tf_im)
+            if args.gui:
+                gui_bw.set_image(vr.out_rgb)
+                gui_bw.show()
+            if args.gif:
+                render_video.write_frame(vr.out_rgb)
+            if args.log_grads:
+                tf_grad_np = vr.tf_tex.grad.to_numpy()
+                vol_grad_np = vr.volume.grad.to_numpy()
+                entry_grad_np = vr.entry.grad.to_numpy()
+                exit_grad_np = vr.exit.grad.to_numpy()
+                rays_grad_np = vr.rays.grad.to_numpy()
+                cam_pos_grad_np = vr.cam_pos.grad.to_numpy()
+                print(f'\n[{i:05d} ========== Loss: ', vr.loss, ' ==========]')
+                print('Max Samples:', vr.max_k, '/', vr.max_samples)
+                print('Learning Rate:', lr)
+                print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
+                print(f'Vol Gradients: {np.abs(vol_grad_np).max(axis=(0,1))}')
+                print(f'Vol Gradient NaNs: {np.isnan(vol_grad_np).astype(np.int32).mean()* 100 : 2.1f}%')
+                print(f'Entry Gradients: {np.abs(entry_grad_np).max(axis=(0,1))}')
+                print(f'Exit Gradients: {np.abs(exit_grad_np).max(axis=(0,1))}')
+                print(f'Rays Gradients: {np.abs(rays_grad_np).max(axis=(0,1))}')
+                print(f'CamPos Gradients: {np.abs(cam_pos_grad_np)}')
 
-            # Standard forward pass for reference image
-            vr.forward(args.fw_sampling_rate, jitter=False)
-            gui_fw.set_image(vr.out_rgb)
-            render_video_fw.write_frame(vr.out_rgb)
-            gui_fw.show()
+            # Log Transfer Function
+            if args.gui or args.gif:
+                tf_pt = vr.tf_tex.to_torch().permute(1,0).contiguous()
+                tf_im = np.rot90(fig_to_img(plot_tfs([tf_pt, torch.from_numpy(tf).permute(1,0)], ['Prediction', 'Target'])), k=3)
+                # Standard forward pass for reference image
+                vr.forward(args.fw_sampling_rate, jitter=False)
+            if args.gui:
+                gui_tf.set_image(tf_im)
+                gui_tf.show()
+                gui_fw.set_image(vr.out_rgb)
+                gui_fw.show()
+            if args.gif:
+                tf_video.write_frame(tf_im)
+                render_video_fw.write_frame(vr.out_rgb)
+
         # Make GIFs
-        render_video.make_video(gif=True, mp4=False)
-        render_video_fw.make_video(gif=True, mp4=False)
-        tf_video.make_video(gif=True, mp4=False)
+        if args.gif:
+            render_video.make_video(gif=True, mp4=False)
+            render_video_fw.make_video(gif=True, mp4=False)
+            tf_video.make_video(gif=True, mp4=False)
 
     elif args.task == 'forward':
         gui = ti.GUI("Volume Raycaster", res=RESOLUTION, fast_gui=True)
