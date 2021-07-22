@@ -297,7 +297,7 @@ class VolumeRaycaster():
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
                     shaded_color = tl.vec4(
-                        (diffuse + specular + self.ambient) *
+                        ti.min(1.0, diffuse + specular + self.ambient) *
                         sample_color.xyz * opacity * self.light_color, opacity)
                     self.render_tape[i, j, sample_idx] = (
                         1.0 - self.render_tape[i, j, sample_idx - 1].w
@@ -357,7 +357,7 @@ class VolumeRaycaster():
         ''' Retrieves the final image from the tape if the `raycast_nondiff` method was used. '''
         for i, j in self.valid_sample_step_count:
             valid_sample_step_count = self.valid_sample_step_count[i, j] - 1
-            self.output_rgba[i, j] = self.render_tape[i, j, 0]
+            self.output_rgba[i, j] = ti.min(1.0, self.render_tape[i, j, 0])
             if valid_sample_step_count > self.max_valid_sample_step_count[None]:
                 self.max_valid_sample_step_count[
                     None] = valid_sample_step_count
@@ -478,12 +478,12 @@ class RaycastFunction(torch.autograd.Function):
 class Raycaster(torch.nn.Module):
     def __init__(self, volume_shape, output_shape, tf_shape, sampling_rate=1.0, jitter=True, max_samples=512, fov=30.0, near=0.1, far=100.0):
         super().__init__()
-        self.volume_shape = volume_shape
+        self.volume_shape = (volume_shape[2], volume_shape[0], volume_shape[1])
         self.output_shape = output_shape
         self.tf_shape = tf_shape
         self.sampling_rate = sampling_rate
         self.jitter = jitter
-        self.vr = VolumeRaycaster(volume_shape, output_shape,
+        self.vr = VolumeRaycaster(self.volume_shape, output_shape,
             max_samples=max_samples, tf_resolution=tf_shape, fov=fov, nearfar=(near, far))
 
     def raycast_nondiff(self, volume, tf, look_from, sampling_rate=None):
