@@ -2,7 +2,7 @@ import torch
 import numpy as np
 from torchvtk.utils import tex_from_pts, TFGenerator
 
-__all__ = ['get_tf']
+__all__ = ['get_tf', 'in_circles', 'get_rand_pos']
 
 def torch_to_ti(tf_pts, tf_res):
     return tex_from_pts(tf_pts, tf_res).permute(1,0).contiguous().numpy()
@@ -80,3 +80,16 @@ def get_tf(id, res):
         return tf_ref.permute(1,0).contiguous().numpy()
     else:
         raise Exception(f'Invalid Transfer function identifier given ({id}).')
+
+
+def in_circles(i, y=0.7, dist=2.5):
+    x = math.cos(i) * dist
+    z = math.sin(i) * dist
+    return torch.tensor([x, y, z], dtype=torch.float32)
+
+
+def get_rand_pos(bs=None, dist=2.7):
+    if bs is None:
+        return F.normalize(torch.randn(3)) * dist
+    else:
+        return F.normalize(torch.randn(bs, 3), dim=1) * dist

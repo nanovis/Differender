@@ -7,16 +7,10 @@ from torchvtk.rendering import plot_comp_render_tf
 from torchvtk.utils import pool_map, make_4d
 import matplotlib.pyplot as plt
 
-from differender.utils import get_tf
+from differender.utils import get_tf, in_circles
 from differender import Raycaster
 
 from torchvision.utils import save_image
-
-
-def in_circles(i, y=0.7, dist=2.5):
-    x = math.cos(i) * dist
-    z = math.sin(i) * dist
-    return torch.tensor([x, y, z], dtype=torch.float32)
 
 
 if __name__ == '__main__':

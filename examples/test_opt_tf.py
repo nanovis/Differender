@@ -7,7 +7,7 @@ from torchvtk.rendering import plot_comp_render_tf
 from torchvtk.utils import pool_map, make_4d
 import matplotlib.pyplot as plt
 
-from differender.utils import get_tf
+from differender.utils import get_tf, in_circles, get_rand_pos
 from differender import Raycaster
 
 from torchvision.utils import save_image, make_grid
@@ -27,16 +27,7 @@ def fig_to_img(fig):
     plt.close(fig)
     return im
 
-def in_circles(i, y=0.7, dist=2.5):
-    x = math.cos(i) * dist
-    z = math.sin(i) * dist
-    return torch.tensor([x, y, z], dtype=torch.float32)
 
-def get_rand_pos(bs=None, dist=2.7):
-    if bs is None:
-        return F.normalize(torch.randn(3)) * dist
-    else:
-        return F.normalize(torch.randn(bs, 3), dim=1) * dist
 
 if __name__ == '__main__':
     TF_RES = 128
