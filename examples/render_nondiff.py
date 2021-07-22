@@ -7,8 +7,8 @@ from torchvtk.rendering import plot_comp_render_tf
 from torchvtk.utils import pool_map, make_4d
 import matplotlib.pyplot as plt
 
-from transfer_functions import get_tf
-from pytorch_module import Raycaster
+from differender.utils import get_tf
+from differender import Raycaster
 
 from torchvision.utils import save_image
 
