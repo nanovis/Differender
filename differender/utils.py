@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from torchvtk.utils import tex_from_pts, TFGenerator
 
+__all__ = ['get_tf']
+
 def torch_to_ti(tf_pts, tf_res):
     return tex_from_pts(tf_pts, tf_res).permute(1,0).contiguous().numpy()
 
