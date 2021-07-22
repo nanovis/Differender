@@ -361,23 +361,22 @@ class VolumeRaycaster():
                     sample_color = self.apply_transfer_function(intensity)
                     opacity = 1.0 - ti.pow(1.0 - sample_color.w,
                                            1.0 / sampling_rate)
-                    # if sample_color.w > 1e-3:
-                    normal = self.get_volume_normal(pos)
-                    light_dir = (
-                        pos -
-                        light_pos).normalized()  # Direction to light source
-                    n_dot_l = max(normal.dot(light_dir), 0.0)
-                    diffuse = self.diffuse * n_dot_l
-                    r = tl.reflect(light_dir,
-                                   normal)  # Direction of reflected light
-                    r_dot_v = max(r.dot(-vd), 0.0)
-                    specular = self.specular * pow(r_dot_v, self.shininess)
-                    shaded_color = tl.vec4(
-                        (diffuse + specular + self.ambient) *
-                        sample_color.xyz * opacity * self.light_color, opacity)
-                    self.render_tape[i, j, 0] = (1.0 - self.render_tape[
-                        i, j, 0].w) * shaded_color + self.render_tape[i, j, 0]
-                    self.valid_sample_step_count[i, j] += 1
+                    if sample_color.w > 1e-3:
+                        normal = self.get_volume_normal(pos)
+                        light_dir = (
+                            pos -
+                            light_pos).normalized()  # Direction to light source
+                        n_dot_l = max(normal.dot(light_dir), 0.0)
+                        diffuse = self.diffuse * n_dot_l
+                        r = tl.reflect(light_dir,
+                                    normal)  # Direction of reflected light
+                        r_dot_v = max(r.dot(-vd), 0.0)
+                        specular = self.specular * pow(r_dot_v, self.shininess)
+                        shaded_color = tl.vec4(
+                            (diffuse + specular + self.ambient) *
+                            sample_color.xyz * opacity * self.light_color, opacity)
+                        self.render_tape[i, j, 0] = (1.0 - self.render_tape[
+                            i, j, 0].w) * shaded_color + self.render_tape[i, j, 0]
 
     @ti.kernel
     def compute_loss(self):
