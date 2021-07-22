@@ -3,4 +3,4 @@
 **/.ipynb_checkpoints/
 **/__pycache__/
 **/.mypy_cache/
-differenger.egg-info/
+**/*.egg-info
