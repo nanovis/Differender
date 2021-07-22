@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 from pathlib import Path
-from torchvtk import __version__
+from differender import __version__
 
 with open(Path(__file__).parent / 'README.md', encoding='utf-8') as f:
     long_description = f.read()
