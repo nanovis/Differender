@@ -8,7 +8,7 @@ from torchvtk.utils import pool_map, make_4d
 import matplotlib.pyplot as plt
 
 from differender.utils import get_tf, in_circles, get_rand_pos
-from differender import Raycaster
+from differender.volume_raycaster import Raycaster
 
 from torchvision.utils import save_image, make_grid
 from pytorch_msssim import ssim as ssim2d
@@ -33,8 +33,8 @@ if __name__ == '__main__':
     TF_RES = 128
     BS = 8
     ITERATIONS = 500
-    tf = torch.from_numpy(get_tf('tf1', TF_RES)).permute(1,0).float().contiguous()
-    tf_gt = torch.from_numpy(get_tf('tf1', TF_RES)).permute(1,0).float().contiguous().to('cuda').expand(BS, -1,-1).float()
+    tf = get_tf('tf1', TF_RES)
+    tf_gt = get_tf('tf1', TF_RES).to('cuda').expand(BS, -1,-1).float()
     vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_256')
     # vol = make_4d(vol_ds[0]['vol'].float())
     # vol = torch.rand(1,256,256,256)

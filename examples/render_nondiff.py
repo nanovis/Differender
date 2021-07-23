@@ -8,7 +8,7 @@ from torchvtk.utils import pool_map, make_4d
 import matplotlib.pyplot as plt
 
 from differender.utils import get_tf, in_circles
-from differender import Raycaster
+from differender.volume_raycaster import Raycaster
 
 from torchvision.utils import save_image
 
@@ -16,7 +16,7 @@ from torchvision.utils import save_image
 if __name__ == '__main__':
     vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500')
     vol = vol_ds[0]['vol'].float()
-    tf = torch.from_numpy(get_tf('tf1', 128)).permute(1,0).float().contiguous()
+    tf = get_tf('tf1', 128)
     raycaster = Raycaster(vol.shape[-3:], (800, 800), 128, jitter=False, max_samples=1)
 
     vol = vol.to('cuda').requires_grad_(True)
