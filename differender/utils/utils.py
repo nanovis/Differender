@@ -1,15 +1,12 @@
 import torch
-import numpy as np
+import torch.nn.functional as F
+import math
 from torchvtk.utils import tex_from_pts, TFGenerator
 
 __all__ = ['get_tf', 'in_circles', 'get_rand_pos']
-
-def torch_to_ti(tf_pts, tf_res):
-    return tex_from_pts(tf_pts, tf_res).permute(1,0).contiguous().numpy()
-
 def get_tf(id, res):
     if  id == 'tf1':
-        return torch_to_ti(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0840, 0.8510, 0.7230, 0.4672, 0.0000],
             [0.0850, 0.8510, 0.7230, 0.4672, 0.0831],
             [0.1844, 0.8510, 0.7230, 0.4672, 0.0801],
@@ -23,7 +20,7 @@ def get_tf(id, res):
             [0.4655, 0.9843, 0.9843, 0.9843, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf2':
-        return torch_to_ti(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0178, 0.5333, 0.3597, 0.1861, 0.0000],
             [0.0206, 0.5333, 0.3597, 0.1861, 0.1834],
             [0.0361, 0.5333, 0.3597, 0.1861, 0.1804],
@@ -38,7 +35,7 @@ def get_tf(id, res):
             [0.4916, 0.9843, 0.9843, 0.9843, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf3':
-        return torch_to_ti(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0279, 0.5991, 0.6235, 0.1345, 0.0000],
             [0.0477, 0.5991, 0.6235, 0.1345, 0.1736],
             [0.1090, 0.5991, 0.6235, 0.1345, 0.1779],
@@ -49,7 +46,7 @@ def get_tf(id, res):
             [0.7850, 0.9843, 0.9843, 0.9843, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf4':
-        return torch_to_ti(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0916, 0.5059, 0.1627, 0.1627, 0.0000],
             [0.1204, 0.5059, 0.1627, 0.1627, 0.1932],
             [0.1865, 0.5059, 0.1627, 0.1627, 0.1956],
@@ -60,28 +57,26 @@ def get_tf(id, res):
             [0.6968, 0.9176, 0.9176, 0.9176, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf5':
-        return torch_to_ti(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.1300, 0.5000, 0.5000, 0.5000, 0.0000],
             [0.1350, 0.5000, 0.5000, 0.5000, 0.7500],
             [0.1600, 0.5000, 0.5000, 0.5000, 0.7500],
             [0.1700, 0.5000, 0.5000, 0.5000, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'black':
-        return np.zeros((res, 4)) + 1e-2
+        return torch.zeros((4, res)) + 1e-2
     elif id == 'gray':
-        temp = np.ones((res, 4)) * 0.5
-        temp[:, 3] = 0.02
+        temp = torch.ones((4, res)) * 0.5
+        temp[3, :] = 0.02
         return temp
     elif id == 'rand':
-        return np.random.random((res, 4))
+        return torch.rand(4, res)
     elif id == 'generate':
         tfgen = TFGenerator(peakgen_kwargs={'max_num_peaks': 2})
         tf_ref = tex_from_pts(tfgen.generate(), res)
-        return tf_ref.permute(1,0).contiguous().numpy()
+        return tf_ref
     else:
         raise Exception(f'Invalid Transfer function identifier given ({id}).')
-
-
 def in_circles(i, y=0.7, dist=2.5):
     x = math.cos(i) * dist
     z = math.sin(i) * dist
@@ -90,6 +85,6 @@ def in_circles(i, y=0.7, dist=2.5):
 
 def get_rand_pos(bs=None, dist=2.7):
     if bs is None:
-        return F.normalize(torch.randn(3)) * dist
+        return F.normalize(torch.randn(3), dim=0) * dist
     else:
         return F.normalize(torch.randn(bs, 3), dim=1) * dist

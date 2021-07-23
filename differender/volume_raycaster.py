@@ -3,9 +3,6 @@ import taichi as ti
 import taichi_glsl as tl
 import numpy as np
 
-ti.init(arch=ti.cuda, default_fp=ti.f32)
-
-
 @ti.func
 def low_high_frac(x: float):
     ''' Returns the integer value below and above, as well as the frac
@@ -97,21 +94,21 @@ class VolumeRaycaster():
         self.light_color = tl.vec3(1.0)
         self.cam_pos = ti.Vector.field(3, dtype=ti.f32)
         volume_resolution = tuple(map(lambda d: d // 4, volume_resolution))
-        render_resolution = tuple(map(lambda d: d // 16, render_resolution))
+        render_resolution = tuple(map(lambda d: d // 8, render_resolution))
         ti.root.dense(ti.ijk,
                       volume_resolution).dense(ti.ijk,
                                                (4, 4, 4)).place(self.volume)
         ti.root.dense(ti.ijk, (*render_resolution, max_samples)).dense(
-            ti.ijk, (16, 16, 1)).place(self.render_tape)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (16, 16)).place(
+            ti.ijk, (8, 8, 1)).place(self.render_tape)
+        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
             self.valid_sample_step_count, self.sample_step_nums)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (16, 16)).place(
+        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
             self.output_rgba)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (16, 16)).place(
+        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
             self.entry, self.exit)
         ti.root.dense(ti.ij,
                       render_resolution).dense(ti.ij,
-                                               (16, 16)).place(self.rays)
+                                               (8, 8)).place(self.rays)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad)
         ti.root.place(self.cam_pos)
@@ -476,13 +473,14 @@ class RaycastFunction(torch.autograd.Function):
                 None, None, None, None
 
 class Raycaster(torch.nn.Module):
-    def __init__(self, volume_shape, output_shape, tf_shape, sampling_rate=1.0, jitter=True, max_samples=512, fov=30.0, near=0.1, far=100.0):
+    def __init__(self, volume_shape, output_shape, tf_shape, sampling_rate=1.0, jitter=True, max_samples=512, fov=30.0, near=0.1, far=100.0, ti_kwargs={}):
         super().__init__()
         self.volume_shape = (volume_shape[2], volume_shape[0], volume_shape[1])
         self.output_shape = output_shape
         self.tf_shape = tf_shape
         self.sampling_rate = sampling_rate
         self.jitter = jitter
+        ti.init(arch=ti.cuda, default_fp=ti.f32, **ti_kwargs)
         self.vr = VolumeRaycaster(self.volume_shape, output_shape,
             max_samples=max_samples, tf_resolution=tf_shape, fov=fov, nearfar=(near, far))
 
@@ -566,7 +564,7 @@ class Raycaster(torch.nn.Module):
             lf_out  = look_from if batched[2].item() else look_from.expand(bs, -1).clone()
             return True, bs, vol_out, tf_out, lf_out
         else:
-            return False, 0, volume, tf, look_from
+            return False, 0, volume.squeeze(0).permute(2, 0, 1).contiguous(), tf.permute(1,0).contiguous(), look_from
 
     def extra_repr(self):
         return f'{self.volume_shape=}, {self.output_shape=}, {self.tf_shape=}, {self.vr.max_samples=}'
