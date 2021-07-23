@@ -567,4 +567,4 @@ class Raycaster(torch.nn.Module):
             return False, 0, volume.squeeze(0).permute(2, 0, 1).contiguous(), tf.permute(1,0).contiguous(), look_from
 
     def extra_repr(self):
-        return f'{self.volume_shape=}, {self.output_shape=}, {self.tf_shape=}, {self.vr.max_samples=}'
+        return f'Volume ({self.volume_shape}), Output Render ({self.output_shape}), TF ({self.tf_shape}), Max Samples = {self.vr.max_samples}'
