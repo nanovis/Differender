@@ -75,7 +75,8 @@ if __name__ == '__main__':
             pred_images.append(torch.clamp(res.detach()[0], 0.0, 1.0).cpu())
             targ_images.append(torch.clamp(gt.detach()[0], 0.0, 1.0).cpu())
             pred_tfs.append(tf.detach().cpu())
-            histograms.append(torch.histc(torch.clamp(vol.detach(), 0.0, 1.0), bins=128, min=0.0, max=1.0).cpu())
+            with torch.cuda.amp.autocast(False):
+                histograms.append(torch.histc(torch.clamp(vol.detach().float(), 0.0, 1.0), bins=128, min=0.0, max=1.0).cpu())
 
             log_str = f'Step {i:03d}:   Loss: {loss.detach().item():0.3f}   SSIM: {1.0 - loss.detach().item():0.3f}   MSE: {mse_loss.detach().item():0.5f}   LR: {sched.get_last_lr()[0]:.1e}   Vol Grad AbsMax: {vol.grad.abs().max():.1e}'
             log_strs.append(log_str)

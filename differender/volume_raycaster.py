@@ -1,4 +1,5 @@
 import torch
+from torch.cuda.amp import autocast, custom_fwd, custom_bwd
 import taichi as ti
 import taichi_glsl as tl
 import numpy as np
@@ -390,6 +391,7 @@ class VolumeRaycaster():
 
 class RaycastFunction(torch.autograd.Function):
     @staticmethod
+    @custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, vr, volume, tf, look_from, sampling_rate, batched, jitter=True):
         ''' Performs Volume Raycasting with the given `volume` and `tf`
 
@@ -436,6 +438,7 @@ class RaycastFunction(torch.autograd.Function):
             return vr.output_rgba.to_torch(device=volume.device)
 
     @staticmethod
+    @custom_bwd
     def backward(ctx, grad_output):
         dev = grad_output.device
         if ctx.batched: # Batched Gradient
@@ -485,7 +488,7 @@ class Raycaster(torch.nn.Module):
             max_samples=max_samples, tf_resolution=tf_shape, fov=fov, nearfar=(near, far))
 
     def raycast_nondiff(self, volume, tf, look_from, sampling_rate=None):
-        with torch.no_grad():
+        with torch.no_grad() as _, autocast(False) as _:
             batched, bs, vol_in, tf_in, lf_in = self._determine_batch(volume, tf, look_from)
             sr = sampling_rate if sampling_rate is not None else 4.0 * self.sampling_rate
             if batched:  # Batched Input
@@ -497,7 +500,8 @@ class Raycaster(torch.nn.Module):
                 # Volume: remove intensity dim, reorder to (BS, W, H, D)
                 # TF: Reorder to (BS, W, 4)
                 for i, vol, tf_, lf in zip(range(bs), vol_in, tf_in, lf_in):
-                    self.vr.set_cam_pos(lf)
+                    with autocast(False):
+                        self.vr.set_cam_pos(lf)
                     self.vr.set_volume(vol)
                     self.vr.set_tf_tex(tf_)
                     self.vr.clear_framebuffer()
