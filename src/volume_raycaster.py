@@ -130,23 +130,26 @@ class VolumeRaycaster():
         self.cuda = torch.device("cuda")
         volume_resolution = tuple(map(lambda d: d // 4, volume_resolution))
         render_resolution = tuple(map(lambda d: d // 16, render_resolution))
-        ti.root.dense(ti.ijk,
-                      volume_resolution).dense(ti.ijk,
-                                               (4, 4, 4)).place(self.volume)
-        ti.root.dense(ti.ijk, (*render_resolution, max_samples)).dense(
-            ti.ijk, (16, 16, 1)).place(self.render_tape)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (16, 16)).place(
-            self.valid_sample_step_count, self.sample_step_nums)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (16, 16)).place(
-            self.output_rgba, self.reference, self.output_rgb)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (16, 16)).place(
-            self.entry, self.exit)
-        ti.root.dense(ti.ij,
-                      render_resolution).dense(ti.ij,
-                                               (16, 16)).place(self.rays)
+        ti.root.dense(ti.ijk, volume_resolution) \
+            .dense(ti.ijk, (4, 4, 4)) \
+            .place(self.volume)
+        ti.root.dense(ti.ijk, (*render_resolution, max_samples)) \
+            .dense(ti.ijk, (16, 16, 1)) \
+            .place(self.render_tape)
+        ti.root.dense(ti.ij, render_resolution) \
+            .dense(ti.ij, (16, 16)) \
+            .place(self.valid_sample_step_count, self.sample_step_nums)
+        ti.root.dense(ti.ij, render_resolution) \
+            .dense(ti.ij, (16, 16)) \
+            .place(self.output_rgba, self.reference, self.output_rgb)
+        ti.root.dense(ti.ij, render_resolution) \
+            .dense(ti.ij, (16, 16)) \
+            .place(self.entry, self.exit)
+        ti.root.dense(ti.ij, render_resolution) \
+            .dense(ti.ij, (16, 16)).place(self.rays)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
-        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad,
-                                                 self.tf_momentum)
+        ti.root.dense(ti.i, tf_resolution) \
+            .place(self.tf_tex.grad, self.tf_momentum)
         ti.root.place(self.cam_pos)
         ti.root.lazy_grad()
 
@@ -195,9 +198,8 @@ class VolumeRaycaster():
         Returns:
             float: Sampled interpolated intensity
         '''
-        pos = tl.clamp(
-            ((0.5 * pos) + 0.5), 0.0,
-            1.0) * ti.static(tl.vec3(*self.volume.shape) - 1.0 - 1e-4)
+        pos = tl.clamp(((0.5 * pos) + 0.5), 0.0, 1.0) \
+              * ti.static(tl.vec3(*self.volume.shape) - 1.0 - 1e-4)
         x_low, x_high, x_frac = low_high_frac(pos.x)
         y_low, y_high, y_frac = low_high_frac(pos.y)
         z_low, z_high, z_frac = low_high_frac(pos.z)
@@ -229,12 +231,12 @@ class VolumeRaycaster():
         x_delta = tl.vec3(delta, 0.0, 0.0)
         y_delta = tl.vec3(0.0, delta, 0.0)
         z_delta = tl.vec3(0.0, 0.0, delta)
-        dx = self.sample_volume_trilinear(
-            pos + x_delta) - self.sample_volume_trilinear(pos - x_delta)
-        dy = self.sample_volume_trilinear(
-            pos + y_delta) - self.sample_volume_trilinear(pos - y_delta)
-        dz = self.sample_volume_trilinear(
-            pos + z_delta) - self.sample_volume_trilinear(pos - z_delta)
+        dx = self.sample_volume_trilinear(pos + x_delta) \
+             - self.sample_volume_trilinear(pos - x_delta)
+        dy = self.sample_volume_trilinear(pos + y_delta) \
+             - self.sample_volume_trilinear(pos - y_delta)
+        dz = self.sample_volume_trilinear(pos + z_delta) \
+             - self.sample_volume_trilinear(pos - z_delta)
         return tl.vec3(dx, dy, dz).normalized()
 
     @ti.func
@@ -267,21 +269,17 @@ class VolumeRaycaster():
             look_from = self.cam_pos[None]
             view_dir = (-look_from).normalized()
 
-            bb_bl = ti.static(tl.vec3(-1.0, -1.0,
-                                      -1.0))  # Bounding Box bottom left
-            bb_tr = ti.static(tl.vec3(1.0, 1.0,
-                                      1.0))  # Bounding Box bottom right
+            bb_bl = ti.static(tl.vec3(-1.0, -1.0, -1.0))  # Bounding Box bottom left
+            bb_tr = ti.static(tl.vec3(1.0, 1.0, 1.0))  # Bounding Box bottom right
             x = (float(i) + 0.5) / max_x  # Get pixel centers in range (0,1)
             y = (float(j) + 0.5) / max_y  #
-            vd = self.get_ray_direction(
-                look_from, view_dir, x,
-                y)  # Get exact view direction to this pixel
-            tmin, tmax, hit = get_entry_exit_points(
-                look_from, vd, bb_bl, bb_tr
-            )  # distance along vd till volume entry and exit, hit bool
+            vd = self.get_ray_direction(look_from, view_dir, x, y)  # Get exact view direction to this pixel
+            tmin, tmax, hit = get_entry_exit_points(look_from,
+                                                    vd,
+                                                    bb_bl,
+                                                    bb_tr)  # distance along vd till volume entry and exit, hit bool
 
-            vol_diag = ti.static(
-                (tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
+            vol_diag = ti.static((tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
             ray_len = tmax - tmin
             n_samples = hit * (
                     ti.floor(sampling_rate * ray_len * vol_diag) + 1
@@ -299,15 +297,12 @@ class VolumeRaycaster():
         for i, j in self.valid_sample_step_count:  # For all pixels
             for sample_idx in range(self.sample_step_nums[i, j]):
                 look_from = self.cam_pos[None]
-                if self.render_tape[i, j, sample_idx -
-                                          1].w < 0.99 and sample_idx < ti.static(
-                    self.max_samples):
+                if self.render_tape[i, j, sample_idx - 1].w < 0.99 \
+                        and sample_idx < ti.static(self.max_samples):
                     tmax = self.exit[i, j]
                     n_samples = self.sample_step_nums[i, j]
                     ray_len = (tmax - self.entry[i, j])
-                    tmin = self.entry[
-                               i,
-                               j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
+                    tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
                     vd = self.rays[i, j]
                     pos = look_from + tl.mix(
                         tmin, tmax,
@@ -316,25 +311,20 @@ class VolumeRaycaster():
                     light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
-                    opacity = 1.0 - ti.pow(1.0 - sample_color.w,
-                                           1.0 / sampling_rate)
+                    opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
                     # if sample_color.w > 1e-3:
                     normal = self.get_volume_normal(pos)
-                    light_dir = (
-                            pos -
-                            light_pos).normalized()  # Direction to light source
+                    light_dir = (pos - light_pos).normalized()  # Direction to light source
                     n_dot_l = max(normal.dot(light_dir), 0.0)
                     diffuse = self.diffuse * n_dot_l
-                    r = tl.reflect(light_dir,
-                                   normal)  # Direction of reflected light
+                    r = tl.reflect(light_dir, normal)  # Direction of reflected light
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
                     shaded_color = tl.vec4(
                         (diffuse + specular + self.ambient) *
                         sample_color.xyz * opacity * self.light_color, opacity)
-                    self.render_tape[i, j, sample_idx] = (
-                                                                 1.0 - self.render_tape[i, j, sample_idx - 1].w
-                                                         ) * shaded_color + self.render_tape[i, j, sample_idx - 1]
+                    self.render_tape[i, j, sample_idx] = (1.0 - self.render_tape[i, j, sample_idx - 1].w) * shaded_color \
+                                                         + self.render_tape[i, j, sample_idx - 1]
                     self.valid_sample_step_count[i, j] += 1
                 else:
                     self.render_tape[i, j, sample_idx] = self.render_tape[
@@ -363,34 +353,30 @@ class VolumeRaycaster():
                                            1.0 / sampling_rate)
                     if sample_color.w > 1e-3:
                         normal = self.get_volume_normal(pos)
-                        light_dir = (
-                                pos -
-                                light_pos).normalized()  # Direction to light source
+                        light_dir = (pos - light_pos).normalized()  # Direction to light source
                         n_dot_l = max(normal.dot(light_dir), 0.0)
                         diffuse = self.diffuse * n_dot_l
-                        r = tl.reflect(light_dir,
-                                       normal)  # Direction of reflected light
+                        r = tl.reflect(light_dir, normal)  # Direction of reflected light
                         r_dot_v = max(r.dot(-vd), 0.0)
                         specular = self.specular * pow(r_dot_v, self.shininess)
                         shaded_color = tl.vec4(
                             (diffuse + specular + self.ambient) *
                             sample_color.xyz * opacity * self.light_color, opacity)
-                        self.render_tape[i, j, 0] = (1.0 - self.render_tape[
-                            i, j, 0].w) * shaded_color + self.render_tape[i, j, 0]
+                        self.render_tape[i, j, 0] = (1.0 - self.render_tape[i, j, 0].w) * shaded_color + \
+                                                    self.render_tape[i, j, 0]
 
     @ti.kernel
     def compute_loss(self):
         for i, j in self.output_rgba:
             self.loss[None] += tl.summation(
-                (self.output_rgba[i, j] - self.reference[i, j]) **
-                2) / ti.static(3.0 * float(
-                self.output_rgba.shape[0] * self.output_rgba.shape[1]))
+                (self.output_rgba[i, j] - self.reference[i, j]) ** 2) / \
+                               ti.static(3.0 * float(self.output_rgba.shape[0] * self.output_rgba.shape[1]))
 
     @ti.kernel
     def apply_grad(self, lr: float, gamma: float, max_grad: float):
         for i in self.tf_tex:
-            self.tf_momentum[i] = gamma * self.tf_momentum[i] + lr * tl.clamp(
-                self.tf_tex.grad[i], -max_grad, max_grad)
+            self.tf_momentum[i] = gamma * self.tf_momentum[i] + \
+                                  lr * tl.clamp(self.tf_tex.grad[i], -max_grad, max_grad)
             self.tf_tex[i] -= self.tf_momentum[i]
             self.tf_tex[i] = ti.max(self.tf_tex[i], 0)
 
@@ -412,8 +398,7 @@ class VolumeRaycaster():
             self.output_rgba[i, j] = self.render_tape[i, j, 0]
             self.output_rgb[i, j] = self.render_tape[i, j, 0].xyz
             if valid_sample_step_count > self.max_valid_sample_step_count[None]:
-                self.max_valid_sample_step_count[
-                    None] = valid_sample_step_count
+                self.max_valid_sample_step_count[None] = valid_sample_step_count
 
     @ti.kernel
     def clear_framebuffer(self):
@@ -452,10 +437,8 @@ class VolumeRaycaster():
         # self.loss.grad[None] = 1.0
         # self.compute_loss.grad()
         reference_tensor = self.reference.to_torch(device=self.cuda)
-        output_rgba_tensor = self.output_rgba.to_torch(
-            device=self.cuda).requires_grad_(True)
-        loss = torch.nn.functional.mse_loss(output_rgba_tensor,
-                                            reference_tensor)
+        output_rgba_tensor = self.output_rgba.to_torch(device=self.cuda).requires_grad_(True)
+        loss = torch.nn.functional.mse_loss(output_rgba_tensor, reference_tensor)
         loss.backward()
         self.loss.from_torch(loss)
         self.output_rgba.grad.from_torch(output_rgba_tensor.grad)
@@ -665,8 +648,7 @@ if __name__ == '__main__':
             gui.show()
             if args.ref:
                 ti.imwrite(vr.output_rgba, 'reference_skull.png')
-                plot_tf(vr.tf_tex.to_torch().permute(
-                    1, 0).contiguous()).savefig('reference_tf_skull.png')
+                plot_tf(vr.tf_tex.to_torch().permute(1, 0).contiguous()).savefig('reference_tf_skull.png')
                 break
 
     else:
