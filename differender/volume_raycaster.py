@@ -49,7 +49,10 @@ def get_entry_exit_points(look_from, view_dir, bl, tr):
     tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6))
     tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6))
     hit = True
-    if tmax < 0.0 or tmin > tmax: hit = False
+    if tmax < 0.0 or tmin > tmax:
+        hit = False
+    else:
+        hit = True
     return tmin, tmax, hit
 
 
@@ -58,6 +61,7 @@ class VolumeRaycaster():
     def __init__(self,
                  volume_resolution,
                  render_resolution,
+                 background_color=0.0,
                  max_samples=512,
                  tf_resolution=128,
                  fov=30.0,
@@ -81,39 +85,43 @@ class VolumeRaycaster():
         self.tf_tex = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.render_tape = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.output_rgba = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
+        self.pos_tape = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
         self.valid_sample_step_count = ti.field(ti.i32)
         self.sample_step_nums = ti.field(ti.i32)
-        self.entry = ti.field(ti.f32)
-        self.exit = ti.field(ti.f32)
-        self.rays = ti.Vector.field(3, dtype=ti.f32)
+        self.entry = ti.field(ti.f32, needs_grad=True)
+        self.exit = ti.field(ti.f32, needs_grad=True)
+        self.rays = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
         self.max_valid_sample_step_count = ti.field(ti.i32, ())
         self.max_samples = max_samples
+        self.background_color = background_color
         self.ambient = 0.4
         self.diffuse = 0.8
         self.specular = 0.3
         self.shininess = 32.0
         self.light_color = tl.vec3(1.0)
-        self.cam_pos = ti.Vector.field(3, dtype=ti.f32)
+        self.cam_pos = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
+        self.cam_pos_field = ti.Vector.field(3, dtype=ti.f32, needs_grad=True)
+
         volume_resolution = tuple(map(lambda d: d // 4, volume_resolution))
         render_resolution = tuple(map(lambda d: d // 8, render_resolution))
         ti.root.dense(ti.ijk,
                       volume_resolution).dense(ti.ijk,
-                                               (4, 4, 4)).place(self.volume)
+                                               (4, 4, 4)).place(self.volume, self.volume.grad)
         ti.root.dense(ti.ijk, (*render_resolution, max_samples)).dense(
-            ti.ijk, (8, 8, 1)).place(self.render_tape)
+            ti.ijk, (8, 8, 1)).place(self.render_tape, self.render_tape.grad, self.pos_tape, self.pos_tape.grad)
         ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
             self.valid_sample_step_count, self.sample_step_nums)
         ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
-            self.output_rgba)
+            self.output_rgba, self.output_rgba.grad)
         ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
-            self.entry, self.exit)
+            self.entry, self.entry.grad, self.exit, self.exit.grad)
         ti.root.dense(ti.ij,
                       render_resolution).dense(ti.ij,
-                                               (8, 8)).place(self.rays)
-        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
-        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad)
-        ti.root.place(self.cam_pos)
-        ti.root.lazy_grad()
+                                               (8, 8)).place(self.rays, self.rays.grad)
+        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex, self.tf_tex.grad)
+        ti.root.place(self.cam_pos, self.cam_pos.grad)
+        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(self.cam_pos_field, self.cam_pos_field.grad)
+
 
     def set_volume(self, volume):
         self.volume.from_torch(volume.float())
@@ -124,7 +132,7 @@ class VolumeRaycaster():
     def set_cam_pos(self, cam_pos):
         self.cam_pos.from_torch(cam_pos.float())
 
-    @ti.func
+    @ti.func # TODO: remove
     def get_ray_direction(self, orig, view_dir, x: float, y: float):
         ''' Compute ray direction for perspecive camera.
 
@@ -140,7 +148,7 @@ class VolumeRaycaster():
         u = x - 0.5
         v = y - 0.5
 
-        up = tl.vec3(0.0, 1.0, 0.0)
+        up = ti.static(tl.vec3(0.0, 1.0, 0.0))
         right = tl.cross(view_dir, up).normalized()
         up = tl.cross(right, view_dir).normalized()
         near_h = 2.0 * ti.tan(self.fov_rad) * self.near
@@ -218,7 +226,7 @@ class VolumeRaycaster():
             self.tf_tex[low],
             self.tf_tex[min(high, ti.static(self.tf_tex.shape[0] - 1))], frac)
 
-    @ti.kernel
+    @ti.kernel # TODO: remove
     def compute_entry_exit(self, sampling_rate: float, jitter: int):
         ''' Produce entry, exit, rays, mask buffers
 
@@ -229,40 +237,90 @@ class VolumeRaycaster():
         for i, j in self.entry:  # For all pixels
             max_x = ti.static(float(self.render_tape.shape[0]))
             max_y = ti.static(float(self.render_tape.shape[1]))
-            look_from = self.cam_pos[None]
-            view_dir = (-look_from).normalized()
-
-            bb_bl = ti.static(tl.vec3(-1.0, -1.0,
-                                      -1.0))  # Bounding Box bottom left
-            bb_tr = ti.static(tl.vec3(1.0, 1.0,
-                                      1.0))  # Bounding Box bottom right
+            view_dir = (-self.cam_pos[None]).normalized()
+            # Bounding Box bottom left & top right
+            bb_bl = ti.static(tl.vec3(-1.0, -1.0, -1.0))
+            bb_tr = ti.static(tl.vec3(1.0, 1.0, 1.0))
             x = (float(i) + 0.5) / max_x  # Get pixel centers in range (0,1)
             y = (float(j) + 0.5) / max_y  #
-            vd = self.get_ray_direction(
-                look_from, view_dir, x,
+            self.rays[i, j] = self.get_ray_direction(
+                self.cam_pos[None], view_dir, x,
                 y)  # Get exact view direction to this pixel
             tmin, tmax, hit = get_entry_exit_points(
-                look_from, vd, bb_bl, bb_tr
+                self.cam_pos[None], self.rays[i, j], bb_bl, bb_tr
             )  # distance along vd till volume entry and exit, hit bool
 
-            vol_diag = ti.static(
-                (tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
+            vol_diag = ti.static((tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
             ray_len = tmax - tmin
-            n_samples = hit * (
-                ti.floor(sampling_rate * ray_len * vol_diag) + 1
-            )  # Number of samples according to https://osf.io/u9qnz
-            if jitter:
-                tmin += ti.random(dtype=float) * ray_len / n_samples
+            n_samples = 1
+            if hit:  # Number of samples according to https://osf.io/u9qnz
+                n_samples = ti.cast(ti.floor(sampling_rate * ray_len * vol_diag), ti.int32) + 1
+            # if ti.static(jitter): # Add random offset for jitter
+            #     tmin += ti.random(dtype=float) * ray_len / n_samples
             self.entry[i, j] = tmin
             self.exit[i, j] = tmax
-            self.rays[i, j] = vd
-            self.sample_step_nums[i, j] = n_samples
+            # self.rays[i, j] = vd
+            self.sample_step_nums[i, j] = min(self.max_samples, n_samples)
+
+    # @ti.ad.grad_replaced
+    # def compute_rays(self):
+    #     self.compute_rays_forward()
+
+    # @ti.ad.grad_for(compute_rays)
+    # def compute_rays_grad(self):
+    #     print(self)
+    #     self.compute_rays_backward()
+
+    @ti.kernel
+    def compute_rays(self):
+        for i,j in self.rays:
+            max_x = ti.static(float(self.rays.shape[0]))
+            max_y = ti.static(float(self.rays.shape[1]))
+            up = ti.static(tl.vec3(0.0, 1.0, 0.0))
+            # Shift to 0 center
+            u = (float(i) + 0.5) / max_x - 0.5
+            v = (float(j) + 0.5) / max_y - 0.5
+            # Compute up & right, as well as near plane extents
+            view_dir = (-self.cam_pos[None]).normalized()
+            right = tl.cross(view_dir, up).normalized()
+            up = tl.cross(right, view_dir).normalized()
+            near_h = 2.0 * ti.tan(self.fov_rad) * self.near
+            near_w = near_h * self.aspect
+            near_m = self.cam_pos[None] + self.near * view_dir
+            near_pos = near_m + u * near_w * right + v * near_h * up
+
+            self.rays[i,j] = (near_pos - self.cam_pos[None]).normalized()
+
+    @ti.kernel
+    def compute_rays_backward(self):
+        for i,j in self.rays:
+            if tl.length(self.rays[i,j]) > 1e-8:
+                updated_ray = (self.rays[i,j] - self.rays.grad[i,j]).normalized()
+                pix_pos = self.cam_pos[None] + self.rays[i, j] * self.entry[i, j]
+                new_campos = pix_pos - updated_ray * (self.entry[i,j] - self.entry.grad[i,j])
+                self.cam_pos.grad[None] += (self.cam_pos[None] - new_campos) #/ ti.static(self.rays.shape[0] * self.rays.shape[1])
+                self.cam_pos_field[i,j] = new_campos
+
+    @ti.kernel
+    def compute_intersections(self, sampling_rate: float, jitter: int):
+        for i,j in self.entry:
+            vol_diag = ti.static((tl.vec3(*self.volume.shape) - tl.vec3(1.0)).norm())
+            bb_bl = ti.static(tl.vec3(-1.0))
+            bb_tr = ti.static(tl.vec3( 1.0))
+            tmin, tmax, hit = get_entry_exit_points(self.cam_pos[None], self.rays[i,j], bb_bl, bb_tr)
+
+            n_samples = 1
+            if hit:
+                n_samples = ti.cast(ti.floor(sampling_rate * vol_diag * (tmax - tmin)), ti.int32) + 1
+            self.entry[i,j] = tmin
+            self.exit[i,j] = tmax
+            self.sample_step_nums[i,j] = min(self.max_samples, n_samples)
 
     @ti.kernel
     def raycast(self, sampling_rate: float):
         ''' Produce a rendering. Run compute_entry_exit first! '''
         for i, j in self.valid_sample_step_count:  # For all pixels
-            for sample_idx in range(self.sample_step_nums[i, j]):
+            for sample_idx in range(1, self.sample_step_nums[i, j]):
                 look_from = self.cam_pos[None]
                 if self.render_tape[i, j, sample_idx -
                                     1].w < 0.99 and sample_idx < ti.static(
@@ -274,19 +332,19 @@ class VolumeRaycaster():
                         i,
                         j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
                     vd = self.rays[i, j]
-                    pos = look_from + tl.mix(
+                    self.pos_tape[i,j, sample_idx] = look_from + tl.mix(
                         tmin, tmax,
                         float(sample_idx) /
                         float(n_samples - 1)) * vd  # Current Pos
                     light_pos = look_from + tl.vec3(0.0, 1.0, 0.0)
-                    intensity = self.sample_volume_trilinear(pos)
+                    intensity = self.sample_volume_trilinear(self.pos_tape[i,j, sample_idx])
                     sample_color = self.apply_transfer_function(intensity)
                     opacity = 1.0 - ti.pow(1.0 - sample_color.w,
                                            1.0 / sampling_rate)
                     # if sample_color.w > 1e-3:
-                    normal = self.get_volume_normal(pos)
+                    normal = self.get_volume_normal(self.pos_tape[i,j, sample_idx])
                     light_dir = (
-                        pos -
+                        self.pos_tape[i,j, sample_idx] -
                         light_pos).normalized()  # Direction to light source
                     n_dot_l = max(normal.dot(light_dir), 0.0)
                     diffuse = self.diffuse * n_dot_l
@@ -331,24 +389,24 @@ class VolumeRaycaster():
                     sample_color = self.apply_transfer_function(intensity)
                     opacity = 1.0 - ti.pow(1.0 - sample_color.w,
                                            1.0 / sampling_rate)
-                    if sample_color.w > 1e-3:
-                        normal = self.get_volume_normal(pos)
-                        light_dir = (pos - light_pos).normalized(
-                        )  # Direction to light source
-                        n_dot_l = max(normal.dot(light_dir), 0.0)
-                        diffuse = self.diffuse * n_dot_l
-                        r = tl.reflect(light_dir,
-                                       normal)  # Direction of reflected light
-                        r_dot_v = max(r.dot(-vd), 0.0)
-                        specular = self.specular * pow(r_dot_v, self.shininess)
-                        shaded_color = tl.vec4(
-                            (diffuse + specular + self.ambient) *
-                            sample_color.xyz * opacity * self.light_color,
-                            opacity)
-                        self.render_tape[
-                            i, j,
-                            0] = (1.0 - self.render_tape[i, j, 0].w
-                                  ) * shaded_color + self.render_tape[i, j, 0]
+                    # if sample_color.w > 1e-3:
+                    normal = self.get_volume_normal(pos)
+                    light_dir = (pos - light_pos).normalized(
+                    )  # Direction to light source
+                    n_dot_l = max(normal.dot(light_dir), 0.0)
+                    diffuse = self.diffuse * n_dot_l
+                    r = tl.reflect(light_dir,
+                                   normal)  # Direction of reflected light
+                    r_dot_v = max(r.dot(-vd), 0.0)
+                    specular = self.specular * pow(r_dot_v, self.shininess)
+                    shaded_color = tl.vec4(
+                        (diffuse + specular + self.ambient) *
+                        sample_color.xyz * opacity * self.light_color,
+                        opacity)
+                    self.render_tape[
+                        i, j,
+                        0] = (1.0 - self.render_tape[i, j, 0].w
+                              ) * shaded_color + self.render_tape[i, j, 0]
 
     @ti.kernel
     def get_final_image_nondiff(self):
@@ -365,28 +423,43 @@ class VolumeRaycaster():
         ''' Retrieves the final image from the `render_tape` to `output_rgba`. '''
         for i, j in self.valid_sample_step_count:
             valid_sample_step_count = self.valid_sample_step_count[i, j] - 1
-            ns = self.sample_step_nums[i, j]
-            self.output_rgba[i, j] += self.render_tape[i, j, ns - 1]
+            ns = tl.clamp(self.sample_step_nums[i, j], 1, self.max_samples-1)
+            rgba = self.render_tape[i, j, ns - 1]
+            self.output_rgba[i, j] += tl.vec4(tl.mix(rgba.xyz, tl.vec3(self.background_color), 1.0 - rgba.w), rgba.w)
             if valid_sample_step_count > self.max_valid_sample_step_count[None]:
                 self.max_valid_sample_step_count[
                     None] = valid_sample_step_count
 
-    @ti.kernel
+
     def clear_framebuffer(self):
         ''' Clears the framebuffer `output_rgba` and the `render_tape`'''
-        self.max_valid_sample_step_count[None] = 0
-        for i, j, k in self.render_tape:
-            self.render_tape[i, j, k] = tl.vec4(0.0)
-        for i, j in self.valid_sample_step_count:
-            self.valid_sample_step_count[i, j] = 1
-            self.output_rgba[i, j] = tl.vec4(0.0)
+        self.max_valid_sample_step_count.fill(0)
+        self.render_tape.fill(tl.vec4(0.0))
+        self.valid_sample_step_count.fill(1)
+        self.output_rgba.fill(tl.vec4(0.0))
 
     def clear_grad(self):
-        ''' Clears the Taichi gradients. '''
+        ti.sync()
+        self.cam_pos.grad.fill(tl.vec3(0.0))
         self.volume.grad.fill(0.0)
-        self.tf_tex.grad.fill(0.0)
-        self.render_tape.grad.fill(0.0)
-        self.output_rgba.grad.fill(0.0)
+        self.tf_tex.grad.fill(tl.vec4(0.0))
+        self.render_tape.grad.fill(tl.vec4(0.0))
+        self.pos_tape.grad.fill(tl.vec3(0.0))
+        self.output_rgba.grad.fill(tl.vec4(0.0))
+        self.entry.grad.fill(0.0)
+        self.exit.grad.fill(0.0)
+        self.rays.grad.fill(tl.vec3(0.0))
+
+    @ti.kernel
+    def grad_nan_to_num(self):
+        self.cam_pos.grad[None] = tl.vec3(0.0)
+        for i,j in self.rays.grad:
+            if any(tl.isnan(self.rays.grad[i,j])):
+                self.rays.grad[i,j] = tl.vec3(0.0)
+            if tl.isnan(self.entry.grad[i,j]):
+                self.entry.grad[i,j] = 0.0
+            if tl.isnan(self.exit.grad[i,j]):
+                self.exit.grad[i,j] = 0.0
 
 
 class RaycastFunction(torch.autograd.Function):
@@ -420,7 +493,9 @@ class RaycastFunction(torch.autograd.Function):
                 vr.set_volume(vol)
                 vr.set_tf_tex(tf_)
                 vr.clear_framebuffer()
-                vr.compute_entry_exit(sampling_rate, jitter)
+                vr.compute_rays()
+                vr.compute_intersections(sampling_rate , jitter)
+                # vr.compute_entry_exit(sampling_rate, jitter)
                 vr.raycast(sampling_rate)
                 vr.get_final_image()
                 result[i] = vr.output_rgba.to_torch(device=volume.device)
@@ -432,7 +507,9 @@ class RaycastFunction(torch.autograd.Function):
             vr.set_volume(volume)
             vr.set_tf_tex(tf)
             vr.clear_framebuffer()
-            vr.compute_entry_exit(sampling_rate, jitter)
+            vr.compute_rays()
+            vr.compute_intersections(sampling_rate , jitter)
+            # vr.compute_entry_exit(sampling_rate, jitter)
             vr.raycast(sampling_rate)
             vr.get_final_image()
             return vr.output_rgba.to_torch(device=volume.device)
@@ -447,22 +524,48 @@ class RaycastFunction(torch.autograd.Function):
             volume_grad = torch.zeros(ctx.bs, *ctx.vr.volume.shape, dtype=torch.float32, device=dev)
             # TF Grad Shape (BS, W, C)
             tf_grad = torch.zeros(ctx.bs, *ctx.vr.tf_tex.shape, ctx.vr.tf_tex.n, dtype=torch.float32, device=dev)
+            # Look From Grad Shape (BS, 3)
+            lf_grad = torch.zeros(ctx.bs, 3, dtype=torch.float32, device=dev)
             for i, vol, tf, lf in zip(range(ctx.bs), vols, tfs, lfs):
-                ctx.vr.clear_grad()
+                # Clear & Setup
                 ctx.vr.set_cam_pos(lf)
                 ctx.vr.set_volume(vol)
                 ctx.vr.set_tf_tex(tf)
+                ctx.vr.clear_grad()
                 ctx.vr.clear_framebuffer()
-                ctx.vr.compute_entry_exit(ctx.sampling_rate, ctx.jitter)
+                # Forward
+                ctx.vr.compute_rays()
+                ctx.vr.compute_intersections(ctx.sampling_rate , ctx.jitter)
                 ctx.vr.raycast(ctx.sampling_rate)
                 ctx.vr.get_final_image()
+                # Backward
                 ctx.vr.output_rgba.grad.from_torch(grad_output[i])
                 ctx.vr.get_final_image.grad()
                 ctx.vr.raycast.grad(ctx.sampling_rate)
+                # print('Output RGBA', torch.nan_to_num(ctx.vr.output_rgba.grad.to_torch(device=dev)).abs().max())
+                # print('Render Tape', torch.nan_to_num(ctx.vr.render_tape.grad.to_torch(device=dev)).abs().max())
+                # print('TF', torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=dev)).abs().max())
+                # print('Volume', torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=dev)).abs().max())
+                # print('Entry', torch.nan_to_num(ctx.vr.entry.grad.to_torch(device=dev)).abs().max())
+                # print('Exit', torch.nan_to_num(ctx.vr.entry.grad.to_torch(device=dev)).abs().max())
+                ctx.vr.grad_nan_to_num()
+                ctx.vr.compute_rays.grad()
+                # print('AUTODIFF CamPos Field', ctx.vr.cam_pos_field)
+                # print('AUTODIFF Camera Pos / Grad', ctx.vr.cam_pos, ctx.vr.cam_pos.grad)
+                # ctx.vr.grad_nan_to_num()
+                # ctx.vr.compute_rays_backward()
+                # ti.sync()
+                # print('MANUAL CamPos Field', ctx.vr.cam_pos_field)
+                # print('MANUAL Camera Pos', ctx.vr.cam_pos.grad)
+                ctx.vr.compute_intersections.grad(ctx.sampling_rate , ctx.jitter)
+                # print('Entry', ctx.vr.entry.grad)
+                # print('Camera Pos', ctx.vr.cam_pos.grad)
+                # ctx.vr.compute_entry_exit.grad(ctx.sampling_rate, ctx.jitter)
 
                 volume_grad[i] = torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=dev))
                 tf_grad[i] = torch.nan_to_num(ctx.vr.tf_tex.grad.to_torch(device=dev))
-            return None, volume_grad, tf_grad, None, None, None, None
+                lf_grad[i] = torch.nan_to_num(ctx.vr.cam_pos.grad.to_torch(device=dev))
+            return None, volume_grad, tf_grad, lf_grad, None, None, None
 
         else: # Non-batched, single item
             ctx.vr.clear_grad()
@@ -473,10 +576,11 @@ class RaycastFunction(torch.autograd.Function):
             return None, \
                 torch.nan_to_num(ctx.vr.volume.grad.to_torch(device=dev)), \
                 torch.nan_to_num(ctx.vr.tf_tex.grad.to_torch(device=dev)), \
-                None, None, None, None
+                torch.nan_to_num(ctx.vr.cam_pos.grad.to_torch(device=dev)), \
+                    None, None, None
 
 class Raycaster(torch.nn.Module):
-    def __init__(self, volume_shape, output_shape, tf_shape, sampling_rate=1.0, jitter=True, max_samples=512, fov=30.0, near=0.1, far=100.0, ti_kwargs={}):
+    def __init__(self, volume_shape, output_shape, tf_shape, sampling_rate=1.0, jitter=True, background_color=0.0, max_samples=512, fov=30.0, near=0.1, far=100.0, ti_kwargs={}):
         super().__init__()
         self.volume_shape = (volume_shape[2], volume_shape[0], volume_shape[1])
         self.output_shape = output_shape
@@ -484,7 +588,7 @@ class Raycaster(torch.nn.Module):
         self.sampling_rate = sampling_rate
         self.jitter = jitter
         ti.init(arch=ti.cuda, default_fp=ti.f32, **ti_kwargs)
-        self.vr = VolumeRaycaster(self.volume_shape, output_shape,
+        self.vr = VolumeRaycaster(self.volume_shape, output_shape, background_color=background_color,
             max_samples=max_samples, tf_resolution=tf_shape, fov=fov, nearfar=(near, far))
 
     def raycast_nondiff(self, volume, tf, look_from, sampling_rate=None):
@@ -505,7 +609,9 @@ class Raycaster(torch.nn.Module):
                     self.vr.set_volume(vol)
                     self.vr.set_tf_tex(tf_)
                     self.vr.clear_framebuffer()
-                    self.vr.compute_entry_exit(sr, False)
+                    self.vr.compute_rays()
+                    self.vr.compute_intersections(sr, False)
+                    # self.vr.compute_entry_exit(sr, False)
                     self.vr.raycast_nondiff(sr)
                     self.vr.get_final_image_nondiff()
                     result[i] = self.vr.output_rgba.to_torch(device=volume.device)
@@ -516,7 +622,9 @@ class Raycaster(torch.nn.Module):
                 self.vr.set_volume(vol_in)
                 self.vr.set_tf_tex(tf_in)
                 self.vr.clear_framebuffer()
-                self.vr.compute_entry_exit(sr, False)
+                self.vr.compute_rays()
+                self.vr.compute_intersections(sr, False)
+                # self.vr.compute_entry_exit(sr, False)
                 self.vr.raycast_nondiff(sr)
                 self.vr.get_final_image_nondiff()
                 # First reorder to (C, H, W), then flip Y to correct orientation

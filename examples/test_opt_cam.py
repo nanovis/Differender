@@ -33,7 +33,8 @@ def fig_to_img(fig):
 if __name__ == '__main__':
     TF_RES = 128
     BS = 1
-    ITERATIONS = 500
+    IM_RES = 256
+    ITERATIONS = 200
     tf = get_tf('tf1', TF_RES)
     tf_gt = get_tf('tf1', TF_RES).to('cuda').expand(BS, -1,-1).float()
     vol_ds = TorchDataset('/run/media/dome/Data/data/torchvtk/CQ500_128')
@@ -41,13 +42,10 @@ if __name__ == '__main__':
     # vol = torch.rand(1,256,256,256)
     vol_gt = make_4d(vol_ds[1]['vol'].float()).to('cuda')
     vol = vol_gt.clone()
-    mask = torch.rand_like(vol) < 0.05
-    vol[mask] = torch.rand_like(vol[mask])
-    vol_gt_hist = torch.histc(vol_gt, 128, 0.0, 1.0).cpu()
     print(f'{vol.shape=}, {vol.min()=}, {vol.max()=}')
     print(f'{tf.shape=}, {tf.min()=}, {tf.max()=}')
 
-    raycast = Raycaster(vol.shape[-3:], (128,128), TF_RES, jitter=False, max_samples=1024, ti_kwargs={
+    raycast = Raycaster(vol.shape[-3:], (IM_RES,IM_RES), TF_RES, jitter=False, max_samples=1024, ti_kwargs={
         'debug': True, 
         'excepthook': True, 
         'device_memory_fraction': 0.5,
@@ -57,9 +55,13 @@ if __name__ == '__main__':
 
     vol = vol.to('cuda').float().requires_grad_(True)
     tf = tf.to('cuda').float().requires_grad_(True)
-
-    opt = torch.optim.AdamW([tf], weight_decay=0)
-    sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=1e-3, total_steps=ITERATIONS)
+    # lf_gt = in_circles(0.0).float().to('cuda')
+    lf = torch.stack([in_circles(t) for t in [-0.0]]).float().to('cuda').requires_grad_(True)
+    # lf = (lf_gt.expand(BS,3).clone() + torch.randn(BS, 3, device='cuda', dtype=torch.float32)).requires_grad_(True)
+    lf_gt = lf.detach()[0].clone()
+    opt = torch.optim.AdamW([lf], weight_decay=0, lr=1e-2)
+    # sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=5e-2, total_steps=ITERATIONS)
+    # sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(opt, 50)
     pred_images = []
     targ_images = []
     pred_tfs = []
@@ -68,9 +70,8 @@ if __name__ == '__main__':
     try:
         for i in range(ITERATIONS):
             # lf = in_circles(0.1* i).to(vol.dtype).to(vol.device)
-            lf = torch.cat([in_circles(0.1 *i)[None], get_rand_pos(BS-1)], dim=0).float().to('cuda').requires_grad_(True)
             with torch.no_grad():
-                gt = raycast.raycast_nondiff(vol_gt.detach(), tf_gt.detach(), lf.detach(), sampling_rate=8.0)
+                gt = raycast.raycast_nondiff(vol_gt.detach(), tf_gt.detach(), lf_gt, sampling_rate=1.0)
             opt.zero_grad()
             res = raycast(vol, tf, lf)
             dssim_loss = 1.0 - ssim2d(res, gt, data_range=1.0, size_average=True, nonnegative_ssim=True)
@@ -85,12 +86,14 @@ if __name__ == '__main__':
             pred_tfs.append(tf.detach().cpu())
             with torch.cuda.amp.autocast(False):
                 histograms.append(torch.histc(torch.clamp(vol.detach().float(), 0.0, 1.0), bins=128, min=0.0, max=1.0).cpu())
-
-            log_str = f'Step {i:03d}:   Loss: {loss.detach().item():0.3f}   SSIM: {1.0 - loss.detach().item():0.3f}   MSE: {mse_loss.detach().item():0.5f}   LR: {sched.get_last_lr()[0]:.1e}   Vol Grad AbsMax: {vol.grad.abs().max():.1e}'
+            with torch.no_grad():
+                angle_diff = torch.rad2deg(torch.acos(torch.dot(F.normalize(lf_gt, dim=0), F.normalize(lf[0], dim=0))))
+                dist_diff = (torch.linalg.norm(lf_gt, dim=0) - torch.linalg.norm(lf[0], dim=0))
+            log_str = f'Step {i:03d}:   Loss: {loss.detach().item():0.3f}   SSIM: {1.0 - dssim_loss.detach().item():0.3f}   MSE: {mse_loss.detach().item():0.5f}   Angle/Dist: {angle_diff.detach().item():.1f}, {dist_diff.detach().item():.1f}   Grad: {lf.grad.squeeze()}'
             log_strs.append(log_str)
             print(log_str)
             opt.step()
-            sched.step()
+            # sched.step()
             with torch.no_grad():
                 tf.clamp_(0.0, 1.0)
                 vol.clamp_(0.0, 1.0)
@@ -104,15 +107,17 @@ if __name__ == '__main__':
     targ_tf = tf_gt.detach()[0].cpu()
     def save_comparison_fig(tup):
         i, pred_im, targ_im, pred_tf, log_str, hist = tup
+        diff_im = (targ_im - pred_im).abs()[:3] * 5.0
         fig = plot_comp_render_tf([(pred_im, pred_tf, 'Prediction'),
-                                   (targ_im, targ_tf, 'Target')])
+                                   (targ_im, targ_tf, 'Target'),
+                                   (diff_im, targ_tf, 'Difference x5')])
         fig.suptitle(log_str, fontsize=16)
         fig.savefig(f'results/ptmod/comparison_plot_{i:03d}.png', dpi=100)
         fig.clear()
         plt.close(fig)
         f, ax = plt.subplots()
         ax.bar(torch.arange(128), hist)
-        f.savefig(f'results/ptmod/hist_{i:03d}.png', dpi=200)
+        # f.savefig(f'results/ptmod/hist_{i:03d}.png', dpi=200)
 
 
     pool_map(save_comparison_fig,

@@ -151,13 +151,13 @@ class VolumeRaycaster():
         ti.root.lazy_grad()
 
     def set_volume(self, volume):
-        self.volume.from_numpy(volume.astype(np.float32))
+        self.volume.from_torch(volume.astype(np.float32))
 
     def set_tf_tex(self, tf_tex):
-        self.tf_tex.from_numpy(tf_tex.astype(np.float32))
+        self.tf_tex.from_torch(tf_tex.astype(np.float32))
 
     def set_reference(self, reference):
-        self.reference.from_numpy(reference.astype(np.float32))
+        self.reference.from_torch(reference.astype(np.float32))
 
     @ti.func
     def get_ray_direction(self, orig, view_dir, x: float, y: float):
@@ -631,7 +631,7 @@ if __name__ == '__main__':
             print(f'TF Gradients: {np.abs(tf_grad_np).max(axis=0)}')
             # Log Transfer Function
             tf_im = np.rot90(fig_to_img(
-                plot_tfs([tf_pt, torch.from_numpy(tf).permute(1, 0)],
+                plot_tfs([tf_pt, tf.permute(1, 0)],
                          ['Prediction', 'Target'])),
                              k=3)
             gui_tf.set_image(tf_im)
