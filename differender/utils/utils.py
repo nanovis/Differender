@@ -4,9 +4,9 @@ import math
 from torchvtk.utils import tex_from_pts, TFGenerator
 
 __all__ = ['get_tf', 'in_circles', 'get_rand_pos']
-def get_tf(id, res):
+def get_tf(id, res, as_tex=True):
     if  id == 'tf1':
-        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        tf_pts = tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0840, 0.8510, 0.7230, 0.4672, 0.0000],
             [0.0850, 0.8510, 0.7230, 0.4672, 0.0831],
             [0.1844, 0.8510, 0.7230, 0.4672, 0.0801],
@@ -20,7 +20,7 @@ def get_tf(id, res):
             [0.4655, 0.9843, 0.9843, 0.9843, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf2':
-        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        tf_pts = tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0178, 0.5333, 0.3597, 0.1861, 0.0000],
             [0.0206, 0.5333, 0.3597, 0.1861, 0.1834],
             [0.0361, 0.5333, 0.3597, 0.1861, 0.1804],
@@ -35,7 +35,7 @@ def get_tf(id, res):
             [0.4916, 0.9843, 0.9843, 0.9843, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf3':
-        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        tf_pts = tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0279, 0.5991, 0.6235, 0.1345, 0.0000],
             [0.0477, 0.5991, 0.6235, 0.1345, 0.1736],
             [0.1090, 0.5991, 0.6235, 0.1345, 0.1779],
@@ -46,7 +46,7 @@ def get_tf(id, res):
             [0.7850, 0.9843, 0.9843, 0.9843, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf4':
-        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        tf_pts = tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.0916, 0.5059, 0.1627, 0.1627, 0.0000],
             [0.1204, 0.5059, 0.1627, 0.1627, 0.1932],
             [0.1865, 0.5059, 0.1627, 0.1627, 0.1956],
@@ -57,26 +57,29 @@ def get_tf(id, res):
             [0.6968, 0.9176, 0.9176, 0.9176, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'tf5':
-        return tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
+        tf_pts = tex_from_pts(torch.tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
             [0.1300, 0.5000, 0.5000, 0.5000, 0.0000],
             [0.1350, 0.5000, 0.5000, 0.5000, 0.7500],
             [0.1600, 0.5000, 0.5000, 0.5000, 0.7500],
             [0.1700, 0.5000, 0.5000, 0.5000, 0.0000],
             [1.0000, 0.0000, 0.0000, 0.0000, 0.0000]]), res)
     elif id == 'black':
-        return torch.zeros((4, res)) + 1e-2
+        tf_pts = torch.tensor([[0.0, 1e-3, 1e-3, 1e-3, 1e-3], [1.0, 1e-3, 1e-3, 1e-3, 1e-3]])
     elif id == 'gray':
-        temp = torch.ones((4, res)) * 0.5
-        temp[3, :] = 0.02
-        return temp
+        tf_pts = torch.tensor([[0.0, 0.5, 0.5, 0.5, 2e-2],
+                             [1.0, 0.5, 0.5, 0.5, 2e-2]])
     elif id == 'rand':
-        return torch.rand(4, res)
+        pos = torch.linspace(0.0, 1.0, 16).unsqueeze(-1)
+        col = torch.rand(16, 4)
+        tf_pts = torch.cat([pos, col], dim=-1)
     elif id == 'generate':
         tfgen = TFGenerator(peakgen_kwargs={'max_num_peaks': 2})
-        tf_ref = tex_from_pts(tfgen.generate(), res)
-        return tf_ref
+        tf_pts = tfgen.generate()
     else:
         raise Exception(f'Invalid Transfer function identifier given ({id}).')
+    
+    if as_tex: return tex_from_pts(tf_pts, res)
+    else:      return tf_pts
 def in_circles(i, y=0.7, dist=2.5):
     x = math.cos(i) * dist
     z = math.sin(i) * dist
