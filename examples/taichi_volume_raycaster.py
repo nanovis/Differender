@@ -361,9 +361,8 @@ class VolumeRaycaster():
     @ti.kernel
     def compute_loss(self):
         for i, j in self.output_rgba:
-            self.loss[None] += tm.summation(
-                (self.output_rgba[i, j] - self.reference[i, j]) ** 2) / \
-                               ti.static(3.0 * float(self.output_rgba.shape[0] * self.output_rgba.shape[1]))
+            self.loss[None] += ((self.output_rgba[i, j] - self.reference[i, j]) ** 2) / \
+                               ti.static(3.0 * float(self.output_rgba.shape[0] * self.output_rgba.shape[1])).sum()
 
     @ti.kernel
     def apply_grad(self, lr: float, gamma: float, max_grad: float):
