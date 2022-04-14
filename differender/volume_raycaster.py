@@ -304,22 +304,17 @@ class VolumeRaycaster():
                     ray_len = (tmax - self.entry[i, j])
                     tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
                     vd = self.rays[i, j]
-                    pos = look_from + tm.mix(
-                        tmin, tmax,
-                        float(cnt) / float(n_samples - 1)) * vd  # Current Pos
+                    pos = look_from + tm.mix(tmin, tmax, float(cnt) / float(n_samples - 1)) * vd  # Current Pos
                     light_pos = look_from + tm.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
-                    opacity = 1.0 - ti.pow(1.0 - sample_color.w,
-                                           1.0 / sampling_rate)
+                    opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
                     if sample_color.w > 1e-3:
                         normal = self.get_volume_normal(pos)
-                        light_dir = (pos - light_pos).normalized(
-                        )  # Direction to light source
+                        light_dir = (pos - light_pos).normalized()  # Direction to light source
                         n_dot_l = max(normal.dot(light_dir), 0.0)
                         diffuse = self.diffuse * n_dot_l
-                        r = tm.reflect(light_dir,
-                                       normal)  # Direction of reflected light
+                        r = tm.reflect(light_dir, normal)  # Direction of reflected light
                         r_dot_v = max(r.dot(-vd), 0.0)
                         specular = self.specular * pow(r_dot_v, self.shininess)
                         shaded_color = tm.vec4((diffuse + specular + self.ambient) *
@@ -463,7 +458,10 @@ class Raycaster(torch.nn.Module):
         self.jitter = jitter
         ti.init(arch=ti.cuda, default_fp=ti.f32, **ti_kwargs)
         self.vr = VolumeRaycaster(self.volume_shape, output_shape,
-                                  max_samples=max_samples, tf_resolution=tf_shape, fov=fov, nearfar=(near, far))
+                                  max_samples=max_samples,
+                                  tf_resolution=tf_shape,
+                                  fov=fov,
+                                  nearfar=(near, far))
 
     def raycast_nondiff(self, volume, tf, look_from, sampling_rate=None):
         with torch.no_grad() as _, autocast(False) as _:
