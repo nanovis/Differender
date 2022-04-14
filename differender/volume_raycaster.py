@@ -23,12 +23,6 @@ def low_high_frac(x: float):
 
 
 @ti.func
-def premultiply_alpha(rgba):
-    rgba.xyz *= rgba.w
-    return rgba
-
-
-@ti.func
 def get_entry_exit_points(look_from, view_dir, bl, tr):
     """ Computes the entry and exit points of a given ray
 
@@ -51,9 +45,7 @@ def get_entry_exit_points(look_from, view_dir, bl, tr):
 
     tmin = max(max(min(t1, t2), min(t3, t4)), min(t5, t6))
     tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6))
-    hit = True
-    if tmax < 0.0 or tmin > tmax:
-        hit = False
+    hit = not (tmax < 0.0 or tmin > tmax)
     return tmin, tmax, hit
 
 
@@ -87,9 +79,7 @@ class VolumeRaycaster:
         self.output_rgba = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
         self.valid_sample_step_count = ti.field(ti.i32)
         self.sample_step_nums = ti.field(ti.i32)
-        self.entry = ti.field(ti.f32)
-        self.exit = ti.field(ti.f32)
-        self.rays = ti.Vector.field(3, dtype=ti.f32)
+        self.jitter = ti.field(ti.f32)
         self.max_valid_sample_step_count = ti.field(ti.i32, ())
         self.max_samples = max_samples
         self.ambient = 0.4
@@ -109,9 +99,10 @@ class VolumeRaycaster:
         ti.root.dense(ti.ij, render_resolution) \
             .dense(ti.ij, (8, 8)) \
             .place(self.valid_sample_step_count, self.sample_step_nums)
+        ti.root.dense(ti.ij, render_resolution) \
+            .dense(ti.ij, (8, 8)) \
+            .place(self.jitter)
         ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(self.output_rgba)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(self.entry, self.exit)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(self.rays)
         ti.root.dense(ti.i, tf_resolution).place(self.tf_tex, self.tf_tex.grad)
         ti.root.place(self.cam_pos)
         ti.root.lazy_grad()
@@ -140,7 +131,6 @@ class VolumeRaycaster:
         """
         u = x - 0.5
         v = y - 0.5
-
         up = tm.vec3(0.0, 1.0, 0.0)
         right = tm.cross(view_dir, up).normalized()
         up = tm.cross(right, view_dir).normalized()
@@ -151,7 +141,7 @@ class VolumeRaycaster:
 
         return (near_pos - orig).normalized()
 
-    @ti.func
+    @ti.experimental.real_func
     def sample_volume_trilinear(self, pos):
         """ Samples volume data at `pos` and trilinearly interpolates the value
 
@@ -213,68 +203,57 @@ class VolumeRaycaster:
         return tm.mix(self.tf_tex[low], self.tf_tex[min(high, ti.static(self.tf_tex.shape[0] - 1))], frac)
 
     @ti.kernel
-    def compute_entry_exit(self, sampling_rate: float, jitter: int):
-        """ Produce entry, exit, rays, mask buffers
-
-        Args:
-            sampling_rate (float): Sampling rate (multiplier to Nyquist criterium)
-            jitter (int): Bool whether to apply jitter or not
-        """
-        for i, j in self.entry:  # For all pixels
-            max_x = ti.static(float(self.render_tape.shape[0]))
-            max_y = ti.static(float(self.render_tape.shape[1]))
-            look_from = self.cam_pos[None]
-            view_dir = (-look_from).normalized()
-
-            bb_bl = ti.static(tm.vec3(-1.0, -1.0, -1.0))  # Bounding Box bottom left
-            bb_tr = ti.static(tm.vec3(1.0, 1.0, 1.0))  # Bounding Box bottom right
-            x = (float(i) + 0.5) / max_x  # Get pixel centers in range (0,1)
-            y = (float(j) + 0.5) / max_y  #
-            vd = self.get_ray_direction(look_from, view_dir, x, y)  # Get exact view direction to this pixel
-            tmin, tmax, hit = get_entry_exit_points(
-                look_from, vd, bb_bl, bb_tr
-            )  # distance along vd till volume entry and exit, hit bool
-
-            vol_diag = ti.static((tm.vec3(*self.volume.shape) - tm.vec3(1.0)).norm())
-            ray_len = tmax - tmin
-            # Number of samples according to https://osf.io/u9qnz
-            n_samples = hit * (ti.floor(sampling_rate * ray_len * vol_diag) + 1)
+    def add_jitter(self, jitter: bool):
+        for i, j in self.jitter:
             if jitter:
-                tmin += ti.random(dtype=float) * ray_len / n_samples
-            self.entry[i, j] = tmin
-            self.exit[i, j] = tmax
-            self.rays[i, j] = vd
-            self.sample_step_nums[i, j] = n_samples
+                self.jitter[i, j] = ti.random(dtype=float)
+            else:
+                self.jitter[i, j] = 0.
 
     @ti.kernel
     def raycast(self, sampling_rate: float):
-        """ Produce a rendering. Run compute_entry_exit first! """
+        """ Produce a rendering."""
         for i, j in self.valid_sample_step_count:  # For all pixels
             # TODO: test Autodiff and see if the new code can be differentiated
             look_from = self.cam_pos[None]
-            tmax = self.exit[i, j]
-            n_samples = self.sample_step_nums[i, j]
-            ray_len = (tmax - self.entry[i, j])
-            tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
-            vd = self.rays[i, j]
+            view_dir = (-look_from).normalized()
+            bb_bl = ti.static(tm.vec3(-1.0, -1.0, -1.0))  # Bounding Box bottom left
+            bb_tr = ti.static(tm.vec3(1.0, 1.0, 1.0))  # Bounding Box bottom right
+            max_x = ti.static(float(self.render_tape.shape[0]))
+            max_y = ti.static(float(self.render_tape.shape[1]))
+            x = (float(i) + 0.5) / max_x  # Get pixel centers in range (0,1)
+            y = (float(j) + 0.5) / max_y  #
+            view_direction = self.get_ray_direction(look_from, view_dir, x, y)  # Get exact view direction to this pixel
+            tmin, tmax, hit = get_entry_exit_points(
+                look_from, view_direction, bb_bl, bb_tr
+            )  # distance along view_direction till volume entry and exit, hit bool
+            vol_diag = ti.static((tm.vec3(*self.volume.shape) - tm.vec3(1.0)).norm())
+            ray_len = tmax - tmin
+            # Number of samples according to https://osf.io/u9qnz
+            n_samples = int(hit) * (ti.floor(sampling_rate * ray_len * vol_diag) + 1)
+            tmin += self.jitter[i, j] * ray_len / n_samples
+            ray_len = tmax - tmin
+            tmin = tmin + 0.5 * ray_len / n_samples  # Offset tmin as t_start
             light_pos = look_from + tm.vec3(0.0, 1.0, 0.0)
-            for sample_idx in range(self.sample_step_nums[i, j]):
-                if self.render_tape[i, j, sample_idx - 1].w < 0.99 and sample_idx < ti.static(self.max_samples):
-                    pos = look_from + tm.mix(tmin, tmax, float(sample_idx) / float(n_samples - 1)) * vd  # Current Pos
-                    intensity = self.sample_volume_trilinear(pos)
+            for sample_idx in range(n_samples):
+                previous_accumulated_color = self.render_tape[i, j, sample_idx - 1]
+                if previous_accumulated_color.a < 0.99 and sample_idx < ti.static(self.max_samples):
+                    current_pos = look_from + \
+                                  tm.mix(tmin, tmax, float(sample_idx) / float(n_samples - 1)) * view_direction
+                    intensity = self.sample_volume_trilinear(current_pos)
                     sample_color = self.apply_transfer_function(intensity)
-                    opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
-                    normal = self.get_volume_normal(pos)
-                    light_dir = (pos - light_pos).normalized()  # Direction to light source
+                    opacity = 1.0 - ti.pow(1.0 - sample_color.a, 1.0 / sampling_rate)
+                    normal = self.get_volume_normal(current_pos)
+                    light_dir = (current_pos - light_pos).normalized()  # Direction to light source
                     n_dot_l = max(normal.dot(light_dir), 0.0)
                     diffuse = self.diffuse * n_dot_l
                     r = tm.reflect(light_dir, normal)  # Direction of reflected light
-                    r_dot_v = max(r.dot(-vd), 0.0)
+                    r_dot_v = max(r.dot(-view_direction), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
                     shaded_color = tm.vec4(ti.min(1.0, diffuse + specular + self.ambient) *
-                                           sample_color.xyz * opacity * self.light_color, opacity)
-                    self.render_tape[i, j, sample_idx] = (1.0 - self.render_tape[i, j, sample_idx - 1].w) \
-                                                         * shaded_color + self.render_tape[i, j, sample_idx - 1]
+                                           sample_color.rgb * opacity * self.light_color, opacity)
+                    self.render_tape[i, j, sample_idx] = (1.0 - previous_accumulated_color.a) \
+                                                         * shaded_color + previous_accumulated_color
                     self.valid_sample_step_count[i, j] += 1
                 else:
                     self.render_tape[i, j, sample_idx] = self.render_tape[i, j, sample_idx - 1]
@@ -287,32 +266,45 @@ class VolumeRaycaster:
             sampling_rate (float): Sampling rate (multiplier with Nyquist frequency)
         """
         for i, j in self.valid_sample_step_count:  # For all pixels
-            for cnt in range(self.sample_step_nums[i, j]):
-                look_from = self.cam_pos[None]
-                if self.render_tape[i, j, 0].w < 0.99:
-                    tmax = self.exit[i, j]
-                    n_samples = self.sample_step_nums[i, j]
-                    ray_len = (tmax - self.entry[i, j])
-                    tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
-                    vd = self.rays[i, j]
-                    pos = look_from + tm.mix(tmin, tmax, float(cnt) / float(n_samples - 1)) * vd  # Current Pos
-                    light_pos = look_from + tm.vec3(0.0, 1.0, 0.0)
-                    intensity = self.sample_volume_trilinear(pos)
+            look_from = self.cam_pos[None]
+            view_dir = (-look_from).normalized()
+            bb_bl = ti.static(tm.vec3(-1.0, -1.0, -1.0))  # Bounding Box bottom left
+            bb_tr = ti.static(tm.vec3(1.0, 1.0, 1.0))  # Bounding Box bottom right
+            max_x = ti.static(float(self.render_tape.shape[0]))
+            max_y = ti.static(float(self.render_tape.shape[1]))
+            x = (float(i) + 0.5) / max_x  # Get pixel centers in range (0,1)
+            y = (float(j) + 0.5) / max_y  #
+            view_direction = self.get_ray_direction(look_from, view_dir, x, y)  # Get exact view direction to this pixel
+            tmin, tmax, hit = get_entry_exit_points(
+                look_from, view_direction, bb_bl, bb_tr
+            )  # distance along view_direction till volume entry and exit, hit bool
+            vol_diag = ti.static((tm.vec3(*self.volume.shape) - tm.vec3(1.0)).norm())
+            ray_len = tmax - tmin
+            # Number of samples according to https://osf.io/u9qnz
+            n_samples = int(hit) * (ti.floor(sampling_rate * ray_len * vol_diag) + 1)
+            ray_len = tmax - tmin
+            tmin = tmin + 0.5 * ray_len / n_samples  # Offset tmin as t_start
+            light_pos = look_from + tm.vec3(0.0, 1.0, 0.0)
+            accumulated_color = tm.vec4(0.0)
+            for cnt in range(n_samples):
+                if accumulated_color.a < 0.99:
+                    current_pos = look_from + tm.mix(tmin, tmax, float(cnt) / float(n_samples - 1)) * view_direction
+                    intensity = self.sample_volume_trilinear(current_pos)
                     sample_color = self.apply_transfer_function(intensity)
-                    opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
-                    if sample_color.w > 1e-3:
-                        normal = self.get_volume_normal(pos)
-                        light_dir = (pos - light_pos).normalized()  # Direction to light source
+                    opacity = 1.0 - ti.pow(1.0 - sample_color.a, 1.0 / sampling_rate)
+                    if sample_color.a > 1e-3:
+                        normal = self.get_volume_normal(current_pos)
+                        light_dir = (current_pos - light_pos).normalized()  # Direction to light source
                         n_dot_l = max(normal.dot(light_dir), 0.0)
                         diffuse = self.diffuse * n_dot_l
                         r = tm.reflect(light_dir, normal)  # Direction of reflected light
-                        r_dot_v = max(r.dot(-vd), 0.0)
+                        r_dot_v = max(r.dot(-view_direction), 0.0)
                         specular = self.specular * pow(r_dot_v, self.shininess)
-                        shaded_color = tm.vec4((diffuse + specular + self.ambient) *
-                                               sample_color.xyz * opacity * self.light_color,
+                        shaded_color = tm.vec4((diffuse + specular + self.ambient)
+                                               * sample_color.rgb * opacity * self.light_color,
                                                opacity)
-                        self.render_tape[i, j, 0] = (1.0 - self.render_tape[i, j, 0].w) \
-                                                    * shaded_color + self.render_tape[i, j, 0]
+                        accumulated_color = (1.0 - accumulated_color.a) * shaded_color + accumulated_color
+            self.render_tape[i, j, 0] = accumulated_color
 
     @ti.kernel
     def get_final_image_nondiff(self):
@@ -382,7 +374,6 @@ class RaycastFunction(torch.autograd.Function):
                 vr.set_volume(vol)
                 vr.set_tf_tex(tf_)
                 vr.clear_framebuffer()
-                vr.compute_entry_exit(sampling_rate, jitter)
                 vr.raycast(sampling_rate)
                 vr.get_final_image()
                 result[i] = vr.output_rgba.to_torch(device=volume.device)
@@ -394,7 +385,6 @@ class RaycastFunction(torch.autograd.Function):
             vr.set_volume(volume)
             vr.set_tf_tex(tf)
             vr.clear_framebuffer()
-            vr.compute_entry_exit(sampling_rate, jitter)
             vr.raycast(sampling_rate)
             vr.get_final_image()
             return vr.output_rgba.to_torch(device=volume.device)
@@ -415,7 +405,6 @@ class RaycastFunction(torch.autograd.Function):
                 ctx.vr.set_volume(vol)
                 ctx.vr.set_tf_tex(tf)
                 ctx.vr.clear_framebuffer()
-                ctx.vr.compute_entry_exit(ctx.sampling_rate, ctx.jitter)
                 ctx.vr.raycast(ctx.sampling_rate)
                 ctx.vr.get_final_image()
                 ctx.vr.output_rgba.grad.from_torch(grad_output[i])
@@ -472,7 +461,6 @@ class Raycaster(torch.nn.Module):
                     self.vr.set_volume(vol)
                     self.vr.set_tf_tex(tf_)
                     self.vr.clear_framebuffer()
-                    self.vr.compute_entry_exit(sr, False)
                     self.vr.raycast_nondiff(sr)
                     self.vr.get_final_image_nondiff()
                     result[i] = self.vr.output_rgba.to_torch(device=volume.device)
@@ -483,7 +471,6 @@ class Raycaster(torch.nn.Module):
                 self.vr.set_volume(vol_in)
                 self.vr.set_tf_tex(tf_in)
                 self.vr.clear_framebuffer()
-                self.vr.compute_entry_exit(sr, False)
                 self.vr.raycast_nondiff(sr)
                 self.vr.get_final_image_nondiff()
                 # First reorder to (C, H, W), then flip Y to correct orientation
