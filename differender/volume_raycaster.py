@@ -100,22 +100,19 @@ class VolumeRaycaster():
         self.cam_pos = ti.Vector.field(3, dtype=ti.f32)
         volume_resolution = tuple(map(lambda d: d // 4, volume_resolution))
         render_resolution = tuple(map(lambda d: d // 8, render_resolution))
-        ti.root.dense(ti.ijk,
-                      volume_resolution).dense(ti.ijk,
-                                               (4, 4, 4)).place(self.volume)
-        ti.root.dense(ti.ijk, (*render_resolution, max_samples)).dense(
-            ti.ijk, (8, 8, 1)).place(self.render_tape)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
-            self.valid_sample_step_count, self.sample_step_nums)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
-            self.output_rgba)
-        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(
-            self.entry, self.exit)
-        ti.root.dense(ti.ij,
-                      render_resolution).dense(ti.ij,
-                                               (8, 8)).place(self.rays)
-        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex)
-        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex.grad)
+        ti.root.dense(ti.ijk, volume_resolution) \
+            .dense(ti.ijk, (4, 4, 4)) \
+            .place(self.volume)
+        ti.root.dense(ti.ijk, (*render_resolution, max_samples)) \
+            .dense(ti.ijk, (8, 8, 1)) \
+            .place(self.render_tape)
+        ti.root.dense(ti.ij, render_resolution) \
+            .dense(ti.ij, (8, 8)) \
+            .place(self.valid_sample_step_count, self.sample_step_nums)
+        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(self.output_rgba)
+        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(self.entry, self.exit)
+        ti.root.dense(ti.ij, render_resolution).dense(ti.ij, (8, 8)).place(self.rays)
+        ti.root.dense(ti.i, tf_resolution).place(self.tf_tex, self.tf_tex.grad)
         ti.root.place(self.cam_pos)
         ti.root.lazy_grad()
 
@@ -274,15 +271,13 @@ class VolumeRaycaster():
                     light_pos = look_from + tm.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
-                    opacity = 1.0 - ti.pow(1.0 - sample_color.w,
-                                           1.0 / sampling_rate)
+                    opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
                     # if sample_color.w > 1e-3:
                     normal = self.get_volume_normal(pos)
                     light_dir = (pos - light_pos).normalized()  # Direction to light source
                     n_dot_l = max(normal.dot(light_dir), 0.0)
                     diffuse = self.diffuse * n_dot_l
-                    r = tm.reflect(light_dir,
-                                   normal)  # Direction of reflected light
+                    r = tm.reflect(light_dir, normal)  # Direction of reflected light
                     r_dot_v = max(r.dot(-vd), 0.0)
                     specular = self.specular * pow(r_dot_v, self.shininess)
                     shaded_color = tm.vec4(ti.min(1.0, diffuse + specular + self.ambient) *
@@ -291,8 +286,7 @@ class VolumeRaycaster():
                                                          * shaded_color + self.render_tape[i, j, sample_idx - 1]
                     self.valid_sample_step_count[i, j] += 1
                 else:
-                    self.render_tape[i, j, sample_idx] = self.render_tape[
-                        i, j, sample_idx - 1]
+                    self.render_tape[i, j, sample_idx] = self.render_tape[i, j, sample_idx - 1]
 
     @ti.kernel
     def raycast_nondiff(self, sampling_rate: float):
