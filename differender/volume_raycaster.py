@@ -7,14 +7,14 @@ import numpy as np
 
 @ti.func
 def low_high_frac(x: float):
-    ''' Returns the integer value below and above, as well as the frac
+    """ Returns the integer value below and above, as well as the frac
 
     Args:
         x (float): Floating point number
 
     Returns:
         int, int, float: floor, ceil, frac of `x`
-    '''
+    """
     x = ti.max(x, 0.0)
     low = ti.floor(x)
     high = low + 1
@@ -30,7 +30,7 @@ def premultiply_alpha(rgba):
 
 @ti.func
 def get_entry_exit_points(look_from, view_dir, bl, tr):
-    ''' Computes the entry and exit points of a given ray
+    """ Computes the entry and exit points of a given ray
 
     Args:
         look_from (tm.vec3): Camera Position as vec3
@@ -40,7 +40,7 @@ def get_entry_exit_points(look_from, view_dir, bl, tr):
 
     Returns:
         float, float, bool: Distance to entry, distance to exit, bool whether box is hit
-    '''
+    """
     dirfrac = 1.0 / view_dir
     t1 = (bl.x - look_from.x) * dirfrac.x
     t2 = (tr.x - look_from.x) * dirfrac.x
@@ -65,21 +65,21 @@ class VolumeRaycaster():
                  max_samples=512,
                  tf_resolution=128,
                  fov=30.0,
-                 nearfar=(0.1, 100.0)):
-        ''' Initializes Volume Raycaster. Make sure to .set_volume() and .set_tf_tex() after initialization
+                 near_far=(0.1, 100.0)):
+        """ Initializes Volume Raycaster. Make sure to .set_volume() and .set_tf_tex() after initialization
 
         Args:
             volume_resolution (3-tuple of int): Resolution of the volume data (w,h,d)
             render_resolution (2-tuple of int): Resolution of the rendering (w,h)
             tf_resolution (int): Resolution of the transfer function texture
             fov (float, optional): Field of view of the camera in degrees. Defaults to 60.0.
-            nearfar (2-tuple of float, optional): Near and far plane distance used for perspective projection. Defaults to (0.1, 100.0).
-        '''
+            near_far (2-tuple of float, optional): Near and far plane distance used for perspective projection. Defaults to (0.1, 100.0).
+        """
         self.resolution = render_resolution
         self.aspect = render_resolution[0] / render_resolution[1]
         self.fov_deg = fov
         self.fov_rad = np.radians(fov)
-        self.near, self.far = nearfar
+        self.near, self.far = near_far
         # Taichi Fields
         self.volume = ti.field(ti.f32, needs_grad=True)
         self.tf_tex = ti.Vector.field(4, dtype=ti.f32, needs_grad=True)
@@ -127,7 +127,7 @@ class VolumeRaycaster():
 
     @ti.func
     def get_ray_direction(self, orig, view_dir, x: float, y: float):
-        ''' Compute ray direction for perspecive camera.
+        """ Compute ray direction for perspecive camera.
 
         Args:
             orig (tm.vec3): Camera position
@@ -137,7 +137,7 @@ class VolumeRaycaster():
 
         Returns:
             tm.vec3: Ray direction from camera origin to pixel specified through `x` and `y`
-        '''
+        """
         u = x - 0.5
         v = y - 0.5
 
@@ -153,14 +153,14 @@ class VolumeRaycaster():
 
     @ti.func
     def sample_volume_trilinear(self, pos):
-        ''' Samples volume data at `pos` and trilinearly interpolates the value
+        """ Samples volume data at `pos` and trilinearly interpolates the value
 
         Args:
             pos (tm.vec3): Position to sample the volume in [-1, 1]^3
 
         Returns:
             float: Sampled interpolated intensity
-        '''
+        """
         pos = tm.clamp(
             ((0.5 * pos) + 0.5), 0.0,
             1.0) * ti.static(tm.vec3(*self.volume.shape) - 1.0 - 1e-4)
@@ -195,38 +195,33 @@ class VolumeRaycaster():
         x_delta = tm.vec3(delta, 0.0, 0.0)
         y_delta = tm.vec3(0.0, delta, 0.0)
         z_delta = tm.vec3(0.0, 0.0, delta)
-        dx = self.sample_volume_trilinear(
-            pos + x_delta) - self.sample_volume_trilinear(pos - x_delta)
-        dy = self.sample_volume_trilinear(
-            pos + y_delta) - self.sample_volume_trilinear(pos - y_delta)
-        dz = self.sample_volume_trilinear(
-            pos + z_delta) - self.sample_volume_trilinear(pos - z_delta)
+        dx = self.sample_volume_trilinear(pos + x_delta) - self.sample_volume_trilinear(pos - x_delta)
+        dy = self.sample_volume_trilinear(pos + y_delta) - self.sample_volume_trilinear(pos - y_delta)
+        dz = self.sample_volume_trilinear(pos + z_delta) - self.sample_volume_trilinear(pos - z_delta)
         return tm.vec3(dx, dy, dz).normalized()
 
     @ti.func
     def apply_transfer_function(self, intensity: float):
-        ''' Applies a 1D transfer function to a given intensity value
+        """ Applies a 1D transfer function to a given intensity value
 
         Args:
             intensity (float): Intensity in [0,1]
 
         Returns:
             tm.vec4: Color and opacity for given `intensity`
-        '''
+        """
         length = ti.static(float(self.tf_tex.shape[0] - 1))
         low, high, frac = low_high_frac(intensity * length)
-        return tm.mix(
-            self.tf_tex[low],
-            self.tf_tex[min(high, ti.static(self.tf_tex.shape[0] - 1))], frac)
+        return tm.mix(self.tf_tex[low], self.tf_tex[min(high, ti.static(self.tf_tex.shape[0] - 1))], frac)
 
     @ti.kernel
     def compute_entry_exit(self, sampling_rate: float, jitter: int):
-        ''' Produce entry, exit, rays, mask buffers
+        """ Produce entry, exit, rays, mask buffers
 
         Args:
             sampling_rate (float): Sampling rate (multiplier to Nyquist criterium)
             jitter (int): Bool whether to apply jitter or not
-        '''
+        """
         for i, j in self.entry:  # For all pixels
             max_x = ti.static(float(self.render_tape.shape[0]))
             max_y = ti.static(float(self.render_tape.shape[1]))
@@ -237,9 +232,7 @@ class VolumeRaycaster():
             bb_tr = ti.static(tm.vec3(1.0, 1.0, 1.0))  # Bounding Box bottom right
             x = (float(i) + 0.5) / max_x  # Get pixel centers in range (0,1)
             y = (float(j) + 0.5) / max_y  #
-            vd = self.get_ray_direction(
-                look_from, view_dir, x,
-                y)  # Get exact view direction to this pixel
+            vd = self.get_ray_direction(look_from, view_dir, x, y)  # Get exact view direction to this pixel
             tmin, tmax, hit = get_entry_exit_points(
                 look_from, vd, bb_bl, bb_tr
             )  # distance along vd till volume entry and exit, hit bool
@@ -257,7 +250,7 @@ class VolumeRaycaster():
 
     @ti.kernel
     def raycast(self, sampling_rate: float):
-        ''' Produce a rendering. Run compute_entry_exit first! '''
+        """ Produce a rendering. Run compute_entry_exit first! """
         for i, j in self.valid_sample_step_count:  # For all pixels
             # TODO: test Autodiff and see if the new code can be differentiated
             look_from = self.cam_pos[None]
@@ -290,11 +283,11 @@ class VolumeRaycaster():
 
     @ti.kernel
     def raycast_nondiff(self, sampling_rate: float):
-        ''' Raycasts in a non-differentiable (but faster and cleaner) way. Use `get_final_image_nondiff` with this.
+        """ Raycasts in a non-differentiable (but faster and cleaner) way. Use `get_final_image_nondiff` with this.
 
         Args:
-            sampling_rate (float): Sampling rate (multiplier with Nyquist frequence)
-        '''
+            sampling_rate (float): Sampling rate (multiplier with Nyquist frequency)
+        """
         for i, j in self.valid_sample_step_count:  # For all pixels
             for cnt in range(self.sample_step_nums[i, j]):
                 look_from = self.cam_pos[None]
@@ -325,7 +318,7 @@ class VolumeRaycaster():
 
     @ti.kernel
     def get_final_image_nondiff(self):
-        ''' Retrieves the final image from the tape if the `raycast_nondiff` method was used. '''
+        """ Retrieves the final image from the tape if the `raycast_nondiff` method was used. """
         for i, j in self.valid_sample_step_count:
             valid_sample_step_count = self.valid_sample_step_count[i, j] - 1
             self.output_rgba[i, j] = ti.min(1.0, self.render_tape[i, j, 0])
@@ -334,7 +327,7 @@ class VolumeRaycaster():
 
     @ti.kernel
     def get_final_image(self):
-        ''' Retrieves the final image from the `render_tape` to `output_rgba`. '''
+        """ Retrieves the final image from the `render_tape` to `output_rgba`. """
         for i, j in self.valid_sample_step_count:
             valid_sample_step_count = self.valid_sample_step_count[i, j] - 1
             ns = self.sample_step_nums[i, j]
@@ -344,7 +337,7 @@ class VolumeRaycaster():
 
     @ti.kernel
     def clear_framebuffer(self):
-        ''' Clears the framebuffer `output_rgba` and the `render_tape`'''
+        """ Clears the framebuffer `output_rgba` and the `render_tape`"""
         self.max_valid_sample_step_count[None] = 0
         for i, j, k in self.render_tape:
             self.render_tape[i, j, k] = tm.vec4(0.0)
@@ -353,7 +346,7 @@ class VolumeRaycaster():
             self.output_rgba[i, j] = tm.vec4(0.0)
 
     def clear_grad(self):
-        ''' Clears the Taichi gradients. '''
+        """ Clears the Taichi gradients. """
         self.volume.grad.fill(0.0)
         self.tf_tex.grad.fill(0.0)
         self.render_tape.grad.fill(0.0)
@@ -364,13 +357,13 @@ class RaycastFunction(torch.autograd.Function):
     @staticmethod
     @custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, vr, volume, tf, look_from, sampling_rate, batched, jitter=True):
-        ''' Performs Volume Raycasting with the given `volume` and `tf`
+        """ Performs Volume Raycasting with the given `volume` and `tf`
 
         Args:
             ctx (obj): Context used for torch.autograd.Function
             vr (VolumeRaycaster): VolumeRaycaster taichi class
             volume (Tensor): PyTorch Tensor representing the volume of shape ([BS,] W, H, D)
-            tf (Tensor): PyTorch Tensor representing a transfer fucntion texture of shape ([BS,] W, C)
+            tf (Tensor): PyTorch Tensor representing a transfer function texture of shape ([BS,] W, C)
             look_from (Tensor): Look From for Raycaster camera. Shape ([BS,] 3)
             sampling_rate (float): Sampling rate as multiplier to the Nyquist frequency
             batched (4-bool): Whether the input is batched (i.e. has an extra dimension or is a list) and a bool for each volume, tf and look_from
@@ -378,7 +371,7 @@ class RaycastFunction(torch.autograd.Function):
 
         Returns:
             Tensor: Resulting rendered image of shape (C, H, W)
-        '''
+        """
         ctx.vr = vr  # Save Volume Raycaster for backward
         ctx.sampling_rate = sampling_rate
         ctx.batched, ctx.bs = batched
@@ -500,7 +493,7 @@ class Raycaster(torch.nn.Module):
                     .permute(2, 1, 0).contiguous()
 
     def forward(self, volume, tf, look_from):
-        ''' Raycasts through `volume` using the transfer function `tf` from given camera position (volume is in [-1,1]^3, centered around 0)
+        """ Raycasts through `volume` using the transfer function `tf` from given camera position (volume is in [-1,1]^3, centered around 0)
 
         Args:
             volume (Tensor): Volume Tensor of shape ([BS,] 1, D, H, W)
@@ -509,7 +502,7 @@ class Raycaster(torch.nn.Module):
 
         Returns:
             Tensor: Rendered image of shape ([BS,] 4, H, W)
-        '''
+        """
         batched, bs, vol_in, tf_in, lf_in = self._determine_batch(volume, tf, look_from)
         if batched:  # Anything batched Batched
             return torch.flip(
@@ -523,7 +516,7 @@ class Raycaster(torch.nn.Module):
                               ).permute(2, 1, 0).contiguous()
 
     def _determine_batch(self, volume, tf, look_from):
-        ''' Determines whether there's a batched input and returns lists of non-batched inputs.
+        """ Determines whether there's a batched input and returns lists of non-batched inputs.
 
         Args:
             volume (Tensor): Volume input, either 4D or 5D (batched)
@@ -532,7 +525,7 @@ class Raycaster(torch.nn.Module):
 
         Returns:
             ([bool], Tensor, Tensor, Tensor): (is anything batched?, batched input or list of non-batched inputs (for all inputs))
-        '''
+        """
         batched = torch.tensor([volume.ndim == 5, tf.ndim == 3, look_from.ndim == 2])
 
         if batched.any():
