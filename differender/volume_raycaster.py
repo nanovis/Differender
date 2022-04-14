@@ -58,7 +58,7 @@ def get_entry_exit_points(look_from, view_dir, bl, tr):
 
 
 @ti.data_oriented
-class VolumeRaycaster():
+class VolumeRaycaster:
     def __init__(self,
                  volume_resolution,
                  render_resolution,
@@ -161,9 +161,7 @@ class VolumeRaycaster():
         Returns:
             float: Sampled interpolated intensity
         """
-        pos = tm.clamp(
-            ((0.5 * pos) + 0.5), 0.0,
-            1.0) * ti.static(tm.vec3(*self.volume.shape) - 1.0 - 1e-4)
+        pos = tm.clamp(((0.5 * pos) + 0.5), 0.0, 1.0) * ti.static(tm.vec3(*self.volume.shape) - 1.0 - 1e-4)
         x_low, x_high, x_frac = low_high_frac(pos.x)
         y_low, y_high, y_frac = low_high_frac(pos.y)
         z_low, z_high, z_frac = low_high_frac(pos.z)
