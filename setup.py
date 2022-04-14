@@ -20,6 +20,5 @@ setup(
         'torchvision',
         'numpy',
         'taichi',
-        'taichi-glsl'
     ],
 )
