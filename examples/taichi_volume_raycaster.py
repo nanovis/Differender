@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from torchvtk.rendering import plot_tf, plot_tfs
 
-from transfer_functions import get_tf
+from differender.utils import get_tf
 
 
 def fig_to_img(fig):

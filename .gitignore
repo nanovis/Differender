@@ -1,4 +1,7 @@
 .idea/
 .vscode/
-__pycache__/
-src/results/*
+**/.ipynb_checkpoints/
+**/__pycache__/
+**/.mypy_cache/
+**/*.egg-info
+**/*.png

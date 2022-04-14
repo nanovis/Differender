@@ -1,5 +1,5 @@
 # Differender
-Taichi-based Differentiable SciVis Renderer
+Taichi-based Differentiable SciVis Renderer for PyTorch
 ## Features & Status
 * Differentiable Rendering
   - [x] Differentiating on transfer functions (TFs)
