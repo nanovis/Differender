@@ -374,6 +374,7 @@ class RaycastFunction(torch.autograd.Function):
                 vr.set_volume(vol)
                 vr.set_tf_tex(tf_)
                 vr.clear_framebuffer()
+                vr.add_jitter(ctx.jitter)
                 vr.raycast(sampling_rate)
                 vr.get_final_image()
                 result[i] = vr.output_rgba.to_torch(device=volume.device)
@@ -385,6 +386,7 @@ class RaycastFunction(torch.autograd.Function):
             vr.set_volume(volume)
             vr.set_tf_tex(tf)
             vr.clear_framebuffer()
+            vr.add_jitter(ctx.jitter)
             vr.raycast(sampling_rate)
             vr.get_final_image()
             return vr.output_rgba.to_torch(device=volume.device)
@@ -400,6 +402,7 @@ class RaycastFunction(torch.autograd.Function):
             # TF Grad Shape (BS, W, C)
             tf_grad = torch.zeros(ctx.bs, *ctx.vr.tf_tex.shape, ctx.vr.tf_tex.n, dtype=torch.float32, device=dev)
             for i, vol, tf, lf in zip(range(ctx.bs), vols, tfs, lfs):
+                # TODO: fix add_jitter in batch mode
                 ctx.vr.clear_grad()
                 ctx.vr.set_cam_pos(lf)
                 ctx.vr.set_volume(vol)
