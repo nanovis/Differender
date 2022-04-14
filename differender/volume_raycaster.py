@@ -259,20 +259,20 @@ class VolumeRaycaster():
     def raycast(self, sampling_rate: float):
         ''' Produce a rendering. Run compute_entry_exit first! '''
         for i, j in self.valid_sample_step_count:  # For all pixels
+            # TODO: test Autodiff and see if the new code can be differentiated
+            look_from = self.cam_pos[None]
+            tmax = self.exit[i, j]
+            n_samples = self.sample_step_nums[i, j]
+            ray_len = (tmax - self.entry[i, j])
+            tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
+            vd = self.rays[i, j]
+            light_pos = look_from + tm.vec3(0.0, 1.0, 0.0)
             for sample_idx in range(self.sample_step_nums[i, j]):
-                look_from = self.cam_pos[None]
                 if self.render_tape[i, j, sample_idx - 1].w < 0.99 and sample_idx < ti.static(self.max_samples):
-                    tmax = self.exit[i, j]
-                    n_samples = self.sample_step_nums[i, j]
-                    ray_len = (tmax - self.entry[i, j])
-                    tmin = self.entry[i, j] + 0.5 * ray_len / n_samples  # Offset tmin as t_start
-                    vd = self.rays[i, j]
                     pos = look_from + tm.mix(tmin, tmax, float(sample_idx) / float(n_samples - 1)) * vd  # Current Pos
-                    light_pos = look_from + tm.vec3(0.0, 1.0, 0.0)
                     intensity = self.sample_volume_trilinear(pos)
                     sample_color = self.apply_transfer_function(intensity)
                     opacity = 1.0 - ti.pow(1.0 - sample_color.w, 1.0 / sampling_rate)
-                    # if sample_color.w > 1e-3:
                     normal = self.get_volume_normal(pos)
                     light_dir = (pos - light_pos).normalized()  # Direction to light source
                     n_dot_l = max(normal.dot(light_dir), 0.0)
